@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en" data-hub="../bcs-reports-hub/">
+<head>
+<meta charset="utf-8">
+<title>BCS Reports Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script type="importmap">{ "imports": { "three": "./three.module.min.js" } }</script>
+</head>
+<body>
+
+<div id="stage" aria-label="3D reports dashboard"></div>
+<div id="fade" aria-hidden="true"></div>
+
+<header id="hud" hidden>
+  <nav id="crumbs" aria-label="Breadcrumb">
+    <button type="button" id="crumb-home" class="crumb">BCS Reports</button>
+    <span class="sep" id="sep-dept" hidden>›</span>
+    <button type="button" id="crumb-dept" class="crumb" hidden></button>
+  </nav>
+  <div id="hud-right">
+    <span id="feed-status" role="status"></span>
+    <button type="button" id="btn-refresh" class="chip-btn" title="Check for new reports">Refresh</button>
+    <button type="button" id="btn-lock" class="chip-btn" title="Forget the password on this device">Lock</button>
+  </div>
+</header>
+
+<div id="hint" hidden></div>
+<div id="toast" role="status" hidden></div>
+
+<section id="focus" hidden aria-label="Report viewer">
+  <div id="focus-bar">
+    <button type="button" id="focus-back" class="chip-btn solid">← Back to wall</button>
+    <div id="focus-title"><b></b><span></span></div>
+    <div id="focus-actions">
+      <button type="button" id="focus-prev" class="chip-btn" title="Previous report">‹</button>
+      <span id="focus-pos"></span>
+      <button type="button" id="focus-next" class="chip-btn" title="Next report">›</button>
+      <a id="focus-open" class="chip-btn" target="_blank" rel="noopener">Open in new tab</a>
+    </div>
+  </div>
+  <iframe id="focus-frame" title="Report"></iframe>
+</section>
+
+<section id="gate" hidden>
+  <form id="gate-form" autocomplete="off">
+    <div class="gate-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    <h1>BCS Reports</h1>
+    <p id="gate-msg">Enter the Reports Hub password to open the dashboard.</p>
+    <input id="gate-pass" type="password" placeholder="Password" aria-label="Password" required>
+    <label class="gate-remember"><input id="gate-remember" type="checkbox" checked> Remember me on this device</label>
+    <button type="submit" id="gate-submit">Unlock</button>
+    <p id="gate-err" role="alert"></p>
+  </form>
+</section>
+
+<div id="loading"><div class="spinner"></div><span>Loading reports…</span></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
