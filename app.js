@@ -20,13 +20,13 @@ const REMEMBER_DAYS = 30;
 const REFRESH_MS = 5 * 60 * 1000;
 
 const DEPT_META = {
-  castle: { label: 'Command', color: '#4c7cff' },
-  finance: { label: 'Finance', color: '#d4a017' },
-  sales: { label: 'Sales', color: '#e15a3a' },
-  marketing: { label: 'Marketing', color: '#8b5cf6' },
-  emails: { label: 'Comms', color: '#22a06b' },
-  implementations: { label: 'Implementations', color: '#c26b3a' },
-  support: { label: 'Support', color: '#1f9bc7' },
+  castle: { label: 'Command', color: '#ec2a86' },
+  finance: { label: 'Finance', color: '#f59e0b' },
+  sales: { label: 'Sales', color: '#ff5d5d' },
+  marketing: { label: 'Marketing', color: '#a855f7' },
+  emails: { label: 'Comms', color: '#4f6ff5' },
+  implementations: { label: 'Implementations', color: '#19b5d8' },
+  support: { label: 'Support', color: '#14c8a4' },
 };
 const FALLBACK_COLORS = ['#5b8def', '#d98a2b', '#3fae8f', '#c05ad6', '#d65a7a', '#7fa33a'];
 
@@ -223,22 +223,73 @@ room.position.z = ROOM_Z;
 room.visible = false;
 scene.add(overview, room);
 
-// ambience (WebGL only): grid floor, drifting dust, a soft glow behind the active wall
-const floorColor = new THREE.Color('#4c7cff');
-const floorTarget = new THREE.Color('#4c7cff');
-let floorMat = null, dust = null, roomGlow = null;
+// ambience (WebGL only): rippling grid floor, a flowing starfield, drifting nebulae,
+// hologram projector pads and beams under each card, a glow behind the active wall
+const floorColor = new THREE.Color('#9a4dff');
+const floorTarget = new THREE.Color('#9a4dff');
+const uTime = { value: 0 };                 // shared clock for every shader
+const flow = new THREE.Vector3();           // how far the starfield has drifted
+const STAR_BOX = new THREE.Vector3(18000, 11000, 18000);
+let warp = 0, warpTarget = 0, warpDir = 1;  // star rush + lens kick while flying between levels
+let floorMat = null, starMat = null, roomGlow = null, roomPad = null, glowTex = null;
+const nebulae = [];
+const PLANE = new THREE.PlaneGeometry(1, 1);
+const UV_VERT = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+
+/** Floor disc with rings that pulse outward, like a hologram projector. */
+function padMaterial(color, seed) {
+  return new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uColor: { value: new THREE.Color(color) }, uTime, uSeed: { value: seed } },
+    vertexShader: UV_VERT,
+    fragmentShader: `uniform vec3 uColor; uniform float uTime; uniform float uSeed; varying vec2 vUv;
+      void main(){
+        float r = length(vUv - 0.5) * 2.0;
+        if (r > 1.0) discard;
+        float a = smoothstep(0.6, 0.0, r) * (0.26 + 0.1 * sin(uTime * 1.7 + uSeed * 9.0));
+        for (int i = 0; i < 3; i++) {
+          float ph = fract(uTime * 0.22 + uSeed + float(i) / 3.0);
+          a += smoothstep(0.045, 0.0, abs(r - ph)) * (1.0 - ph) * 0.85;
+        }
+        a += smoothstep(0.02, 0.0, abs(r - 0.64)) * 0.45;
+        gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.22), a);
+      }`,
+  });
+}
+/** Light cone rising from the pad to the card. */
+function beamMaterial(color, seed) {
+  return new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    uniforms: { uColor: { value: new THREE.Color(color) }, uTime, uSeed: { value: seed } },
+    vertexShader: UV_VERT,
+    fragmentShader: `uniform vec3 uColor; uniform float uTime; uniform float uSeed; varying vec2 vUv;
+      void main(){
+        float x = abs(vUv.x - 0.5) * 2.0;
+        float w = mix(0.3, 1.0, vUv.y);
+        float side = smoothstep(w, w * 0.15, x);
+        float a = side * (0.035 + 0.2 * pow(1.0 - vUv.y, 1.6));
+        a *= 0.8 + 0.2 * sin(uTime * 2.3 + uSeed * 20.0);
+        a *= 0.78 + 0.22 * sin(vUv.y * 46.0 - uTime * 3.2);
+        gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.15), a);
+      }`,
+  });
+}
+
 if (gl) {
   floorMat = new THREE.ShaderMaterial({
     transparent: true, depthWrite: false,
-    uniforms: { uColor: { value: floorColor }, uCam: { value: new THREE.Vector3() } },
+    uniforms: { uColor: { value: floorColor }, uCam: { value: new THREE.Vector3() }, uTime, uCenterZ: { value: 0 } },
     vertexShader: `varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `uniform vec3 uColor; uniform vec3 uCam; varying vec3 vW;
+    fragmentShader: `uniform vec3 uColor; uniform vec3 uCam; uniform float uTime; uniform float uCenterZ; varying vec3 vW;
       float grid(vec2 p, float s){ vec2 q = p / s; vec2 g = abs(fract(q - 0.5) - 0.5) / fwidth(q); return 1.0 - min(min(g.x, g.y), 1.0); }
       void main(){
         float d = distance(vW.xz, uCam.xz);
         float fade = smoothstep(7500.0, 900.0, d);
         float a = grid(vW.xz, 220.0) * 0.5 + grid(vW.xz, 1100.0) * 0.7;
-        gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.25), a * fade * 0.55);
+        // energy ripples travelling outward along the grid lines
+        float r = distance(vW.xz, vec2(0.0, uCenterZ));
+        float pulse = pow(0.5 + 0.5 * sin(r * 0.0042 - uTime * 1.5), 8.0);
+        gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.25 + 0.35 * pulse), a * fade * (0.4 + 1.1 * pulse));
       }`,
   });
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000), floorMat);
@@ -246,16 +297,48 @@ if (gl) {
   floor.position.y = FLOOR_Y;
   scene.add(floor);
 
-  const N = 900, pos = new Float32Array(N * 3);
+  // starfield: an endless box of stars wrapped around the camera, twinkling and drifting past
+  const N = coarse ? 1800 : 3200;
+  const pos = new Float32Array(N * 3), seeds = new Float32Array(N), sizes = new Float32Array(N);
   for (let i = 0; i < N; i++) {
-    pos[i * 3] = (Math.random() - 0.5) * 12000;
-    pos[i * 3 + 1] = FLOOR_Y + Math.random() * 4200;
-    pos[i * 3 + 2] = ROOM_Z - 3000 + Math.random() * 16000;
+    pos[i * 3] = Math.random() * STAR_BOX.x;
+    pos[i * 3 + 1] = Math.random() * STAR_BOX.y;
+    pos[i * 3 + 2] = Math.random() * STAR_BOX.z;
+    seeds[i] = Math.random();
+    sizes[i] = 1.1 + Math.pow(Math.random(), 3) * 3.4;
   }
-  const dustGeo = new THREE.BufferGeometry();
-  dustGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({ color: 0xbcd4ff, size: 9, sizeAttenuation: true, transparent: true, opacity: 0.55, depthWrite: false }));
-  scene.add(dust);
+  const starGeo = new THREE.BufferGeometry();
+  starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  starGeo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
+  starGeo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+  starMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uTime, uFlow: { value: flow }, uCam: { value: new THREE.Vector3() }, uBox: { value: STAR_BOX }, uScale: { value: 800 }, uTint: { value: floorColor }, uFloor: { value: FLOOR_Y }, uWarp: { value: 0 } },
+    vertexShader: `attribute float aSeed; attribute float aSize;
+      uniform float uTime; uniform vec3 uFlow; uniform vec3 uCam; uniform vec3 uBox; uniform float uScale; uniform float uFloor; uniform float uWarp;
+      varying float vA; varying float vSeed;
+      void main(){
+        vec3 p = mod(position + uFlow - uCam, uBox) - 0.5 * uBox + uCam;
+        vec4 mv = viewMatrix * vec4(p, 1.0);
+        float d = -mv.z;
+        float tw = 0.62 + 0.38 * sin(uTime * (0.7 + aSeed * 2.6) + aSeed * 40.0);
+        vA = mix(tw, 1.0, uWarp) * smoothstep(200.0, 1500.0, d) * (1.0 - smoothstep(uBox.z * 0.32, uBox.z * 0.5, d)) * step(uFloor, p.y);
+        vSeed = aSeed;
+        gl_PointSize = clamp(aSize * uScale * (5.0 + 6.0 * uWarp) / d, 1.6, 9.0);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `uniform vec3 uTint; varying float vA; varying float vSeed;
+      void main(){
+        float r = length(gl_PointCoord - 0.5);
+        float a = smoothstep(0.5, 0.0, r);
+        vec3 col = mix(vec3(0.8, 0.9, 1.0), vec3(1.0, 0.88, 0.74), step(0.82, vSeed));
+        col = mix(col, mix(uTint, vec3(1.0), 0.3), 0.6 * step(vSeed, 0.28));
+        gl_FragColor = vec4(col, a * a * vA);
+      }`,
+  });
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.frustumCulled = false;
+  scene.add(stars);
 
   const c = document.createElement('canvas');
   c.width = c.height = 256;
@@ -266,10 +349,29 @@ if (gl) {
   grad.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = grad;
   g.fillRect(0, 0, 256, 256);
-  roomGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), color: 0x4c7cff, transparent: true, opacity: 0.32, depthWrite: false, blending: THREE.AdditiveBlending }));
+  glowTex = new THREE.CanvasTexture(c);
+
+  // nebulae: huge soft clouds far behind everything, slowly drifting and breathing
+  scene.add(camera);
+  [['#d81b84', -10500, 4200, 22000], ['#4450e0', 1500, 2200, 20000], ['#12a6c4', 11000, -1800, 20000]].forEach(([color, x, y, size], i) => {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color, transparent: true, opacity: 0.1, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending }));
+    s.scale.set(size, size * 0.62, 1);
+    s.position.set(x, y, -30000);
+    s.renderOrder = -10;
+    s.userData = { x, y, i };
+    camera.add(s);
+    nebulae.push(s);
+  });
+
+  roomGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0x9a4dff, transparent: true, opacity: 0.32, depthWrite: false, blending: THREE.AdditiveBlending }));
   roomGlow.scale.set(7000, 3600, 1);
   roomGlow.position.set(0, 100, -700);
   room.add(roomGlow);
+  roomPad = new THREE.Mesh(PLANE, padMaterial('#9a4dff', 0.37));
+  roomPad.rotation.x = -Math.PI / 2;
+  roomPad.scale.setScalar(4200);
+  roomPad.position.set(0, FLOOR_Y + 3, 300);
+  room.add(roomPad);
 }
 
 // ----------------------------------------------------------------------------
@@ -292,6 +394,7 @@ function setAccent(color) {
   document.documentElement.style.setProperty('--accent', color);
   floorTarget.set(color);
   if (roomGlow) roomGlow.material.color.set(color);
+  if (roomPad) roomPad.material.uniforms.uColor.value.set(color);
 }
 
 /** Places n items on a gently curved grid. Returns [{x, y, z, ry}] plus the grid size. */
@@ -312,8 +415,21 @@ function curvedGrid(n, cols, cw, ch, gx, gy, radius) {
 // ----------------------------------------------------------------------------
 // overview: department cards
 // ----------------------------------------------------------------------------
-function cardElement(d) {
-  const card = el('div', 'card');
+function countUp(node, to) {
+  if (reducedMotion || to <= 0) return;
+  const t0 = performance.now(), ms = 700 + Math.min(600, to * 40);
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / ms);
+    node.textContent = String(Math.round(to * (1 - Math.pow(1 - k, 3))));
+    if (k < 1) requestAnimationFrame(step);
+  };
+  node.textContent = '0';
+  requestAnimationFrame(step);
+}
+
+function cardElement(d, i) {
+  const card = el('div', d.newCount ? 'card hot' : 'card');
+  card.style.setProperty('--i', String(i));
   card.dataset.dept = d.id;
   card.style.setProperty('--c', d.color);
   card.setAttribute('role', 'button');
@@ -325,7 +441,9 @@ function cardElement(d) {
   top.append(el('span', 'card-dot'), el('span', 'card-name', d.label));
   if (d.newCount) top.append(el('span', 'pill-new', `${d.newCount} new`));
   const count = el('div', 'card-count');
-  count.append(el('b', null, String(n)), el('span', null, n === 1 ? 'report' : 'reports'));
+  const big = el('b', null, String(n));
+  countUp(big, n);
+  count.append(big, el('span', null, n === 1 ? 'report' : 'reports'));
   inner.append(top, count);
   if (n) {
     const list = el('ul', 'card-latest');
@@ -343,24 +461,40 @@ function cardElement(d) {
 }
 
 let ovTitle = null;
+function dropDept(d) {
+  if (d.obj) overview.remove(d.obj, d.back);
+  if (d.pad) { overview.remove(d.pad, d.beam); d.pad.material.dispose(); d.beam.material.dispose(); }
+  d.obj = d.back = d.pad = d.beam = null;
+}
 function buildOverview() {
   if (ovTitle) overview.remove(ovTitle);
   const head = el('div', 'ov-title');
   const total = depts.reduce((a, d) => a + d.reports.length, 0);
   const fresh = depts.reduce((a, d) => a + d.newCount, 0);
   const day = parseDate(feedDay);
+  const h2 = el('h2');
+  if (day) h2.append(el('span', null, day.toLocaleDateString('en-US', { weekday: 'long' }) + ', '), el('span', 'grad', day.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })));
+  else h2.append(el('span', 'grad', 'All departments'));
   head.append(
-    el('h2', null, day ? day.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) : 'All departments'),
+    el('div', 'eyebrow', 'BCS REPORTS HUB'),
+    h2,
     el('p', null, `${total} report${total === 1 ? '' : 's'} across ${depts.length} departments${fresh ? ` · ${fresh} new today` : ''}`));
   ovTitle = new CSS3DObject(head);
   overview.add(ovTitle);
-  for (const d of depts) { if (d.obj) overview.remove(d.obj, d.back); }
-  depts.forEach((d) => {
-    d.obj = new CSS3DObject(cardElement(d));
-    const back = el('div', 'card-back');
+  depts.forEach(dropDept);
+  depts.forEach((d, i) => {
+    d.obj = new CSS3DObject(cardElement(d, i));
+    const back = el('div', d.newCount ? 'card-back hot' : 'card-back');
+    back.style.setProperty('--i', String(i));
     back.style.setProperty('--c', d.color);
     d.back = new CSS3DObject(back);
     overview.add(d.back, d.obj);
+    if (gl) {
+      d.pad = new THREE.Mesh(PLANE, padMaterial(d.color, (i * 0.37) % 1));
+      d.pad.rotation.x = -Math.PI / 2;
+      d.beam = new THREE.Mesh(PLANE, beamMaterial(d.color, (i * 0.61) % 1));
+      overview.add(d.pad, d.beam);
+    }
   });
   layoutOverview();
 }
@@ -376,10 +510,18 @@ function layoutOverview() {
     d.obj.rotation.y = p.ry;
     d.back.position.set(p.x, p.y, p.z - 46);
     d.back.rotation.y = p.ry;
+    if (d.pad) {
+      const top = p.y - CARD_H / 2 + 30, h = Math.max(60, top - FLOOR_Y);
+      d.pad.position.set(p.x, FLOOR_Y + 3, p.z - 40);
+      d.pad.scale.setScalar(660);
+      d.beam.position.set(p.x, FLOOR_Y + h / 2, p.z - 40);
+      d.beam.scale.set(CARD_W * 0.7, h, 1);
+      d.beam.rotation.y = p.ry;
+    }
   });
   ov.w = grid.w; ov.h = grid.h;
-  if (ovTitle) ovTitle.position.set(0, grid.h / 2 + 190, 0);
-  ov.home = fitDistance(grid.w, grid.h + 2 * 330, OV_RADIUS, 1.12);
+  if (ovTitle) ovTitle.position.set(0, grid.h / 2 + 225, 0);
+  ov.home = fitDistance(grid.w, grid.h + 2 * 390, OV_RADIUS, 1.12);
   ov.enter = Math.min(ov.home * 0.6, fillDistance(CARD_W, CARD_H, 0.68, 0.86));
 }
 
@@ -389,6 +531,7 @@ function layoutOverview() {
 function screenElement(d, report, idx) {
   const scr = el('div', 'screen');
   scr.dataset.idx = String(idx);
+  scr.style.setProperty('--i', String(idx));
   scr.style.setProperty('--c', d.color);
   scr.setAttribute('role', 'button');
   scr.tabIndex = 0;
@@ -425,7 +568,7 @@ async function fillScreen(rec) {
 function clearRoom() {
   for (const rec of rm.screens) { rec.alive = false; rec.iframe.srcdoc = ''; room.remove(rec.obj); }
   rm.screens = [];
-  for (const o of [...room.children]) if (o !== roomGlow) room.remove(o);
+  for (const o of [...room.children]) if (o !== roomGlow && o !== roomPad) room.remove(o);
 }
 
 function buildRoom(d) {
@@ -571,6 +714,14 @@ function panBy(dx, dy) {
   clampGoal();
 }
 
+function streaks(dir) {
+  const w = document.getElementById('warp');
+  if (!w || reducedMotion) return;
+  w.classList.remove('in', 'out');
+  void w.offsetWidth;            // restart the animation
+  w.classList.add(dir);
+}
+
 async function enterRoom(d, instant = false) {
   if (busy || mode !== 'overview') return;
   busy = true;
@@ -579,6 +730,7 @@ async function enterRoom(d, instant = false) {
   if (!instant) {
     const from = cam.pos.clone();
     const to = new THREE.Vector3(d.base.x, d.base.y, d.base.z + 330);
+    warpDir = 1; warpTarget = 1; streaks('in');
     await tween(430, (k) => { cam.pos.lerpVectors(from, to, k); els.fade.style.opacity = String(k * k); }, easeIn);
   }
   overview.visible = false;
@@ -589,6 +741,7 @@ async function enterRoom(d, instant = false) {
   const start = home.clone(); start.z = ROOM_Z + rm.home * 1.9;
   els.fade.style.opacity = '1';
   updateHud();
+  warpTarget = 0;
   await tween(instant ? 1 : 700, (k) => { cam.pos.lerpVectors(start, home, k); els.fade.style.opacity = String(1 - k); }, easeOut);
   cam.goal.copy(home);
   els.fade.style.opacity = '0';
@@ -602,6 +755,7 @@ async function leaveRoom() {
   busy = true;
   const from = cam.pos.clone();
   const out = from.clone(); out.z += rm.home * 0.9;
+  warpDir = -1; warpTarget = 1; streaks('out');
   await tween(330, (k) => { cam.pos.lerpVectors(from, out, k); els.fade.style.opacity = String(k); }, easeIn);
   const d = current;
   clearRoom();
@@ -609,10 +763,11 @@ async function leaveRoom() {
   overview.visible = true;
   mode = 'overview';
   current = null;
-  setAccent('#4c7cff');
+  setAccent('#9a4dff');
   updateHud();
   const start = new THREE.Vector3(d.base.x, d.base.y, d.base.z + ov.enter * 0.8);
   const home = new THREE.Vector3(0, 0, ov.home);
+  warpTarget = 0;
   await tween(750, (k) => { cam.pos.lerpVectors(start, home, k); els.fade.style.opacity = String(1 - Math.min(1, k * 2.2)); }, easeOut);
   cam.goal.copy(home);
   els.fade.style.opacity = '0';
@@ -893,7 +1048,27 @@ function frame(now) {
   if (gl && mode !== 'focus') {
     floorColor.lerp(floorTarget, Math.min(1, dt * 3));
     floorMat.uniforms.uCam.value.copy(cam.pos);
-    if (dust && !reducedMotion) dust.rotation.y = Math.sin(now * 0.00005) * 0.02;
+    floorMat.uniforms.uCenterZ.value = mode === 'overview' ? 0 : ROOM_Z;
+    if (!reducedMotion) {
+      uTime.value = now / 1000;
+      warp += (warpTarget - warp) * Math.min(1, dt * 7);
+      if (warp < 0.002 && warpTarget === 0) warp = 0;
+      // stars drift gently toward the viewer, and rush past while flying between levels
+      flow.z = (flow.z + dt * (70 + warp * 15000) * (warp > 0.01 ? warpDir : 1) + STAR_BOX.z) % STAR_BOX.z;
+      flow.x = (flow.x + dt * 22) % STAR_BOX.x;
+      flow.y = (flow.y + dt * 6) % STAR_BOX.y;
+      const fov = FOV + warp * 9;
+      if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+      for (const s of nebulae) {
+        const { x, y, i } = s.userData, t = uTime.value;
+        s.position.x = x + Math.sin(t * 0.045 + i * 2.1) * 2600;
+        s.position.y = y + Math.cos(t * 0.037 + i * 1.3) * 1100;
+        s.material.opacity = 0.15 + 0.06 * Math.sin(t * 0.33 + i * 2.4);
+      }
+    }
+    starMat.uniforms.uCam.value.copy(cam.pos);
+    starMat.uniforms.uScale.value = H * gl.getPixelRatio();
+    starMat.uniforms.uWarp.value = warp;
     gl.render(scene, camera);
   }
   if (mode !== 'focus' || els.focus.getAnimations?.().length) css.render(scene, camera);
@@ -910,7 +1085,7 @@ function applyManifest(manifest, announce) {
     const before = depts.reduce((a, d) => a + d.reports.length, 0);
     const oldCurrentHrefs = current ? current.reports.map((r) => r.href).join('|') : '';
     const currentId = current ? current.id : null;
-    for (const d of depts) { if (d.obj) overview.remove(d.obj, d.back); d.obj = null; }
+    depts.forEach(dropDept);
     depts = buildDepts(manifest);
     manifestStamp = stamp;
     feedDay = manifest.today || '';
@@ -941,6 +1116,22 @@ async function refresh(manual = false) {
   } finally { refreshing = false; }
 }
 
+function shootingStar() {
+  const sky = document.getElementById('sky');
+  if (sky && !document.hidden && mode !== 'focus') {
+    const s = el('div', 'shoot');
+    const fromLeft = Math.random() < 0.5;
+    s.style.left = `${(fromLeft ? 5 : 45) + Math.random() * 45}%`;
+    s.style.top = `${4 + Math.random() * 38}%`;
+    s.style.setProperty('--r', `${fromLeft ? 14 + Math.random() * 22 : 166 - Math.random() * 22}deg`);
+    s.style.setProperty('--dist', `${Math.round(W * (0.3 + Math.random() * 0.35))}px`);
+    s.style.setProperty('--t', `${(0.8 + Math.random() * 0.7).toFixed(2)}s`);
+    s.addEventListener('animationend', () => s.remove());
+    sky.append(s);
+  }
+  setTimeout(shootingStar, 3500 + Math.random() * 8000);
+}
+
 function start(manifest) {
   els.loading.hidden = true;
   els.gate.hidden = true;
@@ -954,6 +1145,7 @@ function start(manifest) {
   const wanted = decodeURIComponent(location.hash.slice(1));
   const d = depts.find((x) => x.id === wanted);
   if (d) enterRoom(d, true);
+  if (!reducedMotion) setTimeout(shootingStar, 2500);
   setInterval(() => { if (!document.hidden) refresh(false); }, REFRESH_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(false); });
 }
