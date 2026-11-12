@@ -149,7 +149,6 @@ button { font: inherit; color: inherit; }
 @keyframes ping { 0% { transform: scale(1); opacity: 0.9; } 100% { transform: scale(3.6); opacity: 0; } }
 .card-name { font-family: var(--display); font-weight: 700; font-size: 40px; line-height: 1; letter-spacing: 0.005em; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pill-new { animation: beat 1.8s ease-in-out infinite; flex: none; background: linear-gradient(90deg, #ec2a86, #a53fd8); color: #fff; font-weight: 700; font-size: 20px; padding: 6px 14px; border-radius: 999px; }
-.pill-live { flex: none; background: linear-gradient(90deg, #00B7D1, #14c8a4); color: #081018; font-weight: 800; font-size: 16px; letter-spacing: 0.1em; padding: 6px 12px; border-radius: 999px; }
 .card-count { display: flex; align-items: baseline; gap: 14px; margin: 14px 0 10px; }
 .card-count b { text-shadow: 0 0 46px color-mix(in srgb, var(--c) 70%, transparent); font-family: var(--display); font-weight: 800; font-size: 104px; line-height: 0.95; color: color-mix(in srgb, var(--c) 55%, white); font-variant-numeric: tabular-nums; }
 .card-count span { font-size: 24px; color: var(--muted); font-weight: 500; }
@@ -203,8 +202,6 @@ button { font: inherit; color: inherit; }
 .screen h3 { margin: 0; flex: 1; min-width: 0; font-family: var(--display); font-weight: 700; font-size: 30px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .screen .meta { flex: none; font-size: 22px; color: #b8c4d6; }
 .screen .badge { flex: none; background: linear-gradient(90deg, #ec2a86, #a53fd8); color: #fff; font-weight: 800; font-size: 19px; letter-spacing: 0.06em; padding: 5px 12px; border-radius: 999px; }
-.screen .badge.live { background: linear-gradient(90deg, #00B7D1, #14c8a4); color: #081018; }
-.screen, .screen-inner { -webkit-backface-visibility: hidden; backface-visibility: hidden; }
 .screen .frame { position: relative; flex: 1; background: #fff; }
 .screen iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; background: #fff; opacity: 0; transition: opacity 0.4s; }
 .screen.ready iframe { opacity: 1; }
@@ -259,7 +256,32 @@ button { font: inherit; color: inherit; }
 #gate-submit:disabled { opacity: 0.6; cursor: progress; }
 #gate #gate-err { color: #ff9c8a; min-height: 1.3em; }
 
+/* compact: set by the layout when cards render small (phones, small tablets) */
+body.compact .card-top { align-items: flex-start; }
+body.compact .card-dot { width: 24px; height: 24px; margin-top: 15px; }
+body.compact .card-name { font-size: 54px; line-height: 1.04; white-space: normal; }
+body.compact .card-count { margin: auto 0 0; }
+body.compact .card-count b { font-size: 150px; }
+body.compact .card-count span { font-size: 36px; }
+body.compact .card-latest, body.compact .card-empty { display: none; }
+body.compact .card .pill-new { position: absolute; right: 30px; bottom: 30px; font-size: 32px; padding: 8px 20px; }
+body.compact .ov-title p { font-size: 44px; }
+body.compact .ov-title .eyebrow { font-size: 30px; }
+body.compact .screen header { height: 96px; gap: 20px; }
+body.compact .screen h3 { font-size: 44px; }
+body.compact .screen .meta { display: none; }
+body.compact .screen .badge { font-size: 28px; }
+body.compact .room-title p { font-size: 60px; }
+
+.narrow { display: none; }
 @media (max-width: 640px) {
+  .wide { display: none; }
+  .narrow { display: inline; }
+  #focus-bar { gap: 8px; flex-wrap: nowrap; }
+  #focus-actions { gap: 4px; }
+  #hud { padding-bottom: 14px; }
+  .chip-btn { padding: 6px 12px; }
+  #hint { font-size: 12px; padding: 7px 14px; }
   #feed-status { display: none; }
   .crumb { font-size: 16px; }
   #focus-title span, #focus-pos { display: none; }

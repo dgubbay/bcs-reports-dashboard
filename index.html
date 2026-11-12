@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-hub="./data/">
+<html lang="en" data-hub="../bcs-reports-hub/">
 <head>
 <meta charset="utf-8">
 <title>BCS Reports Dashboard</title>
@@ -38,13 +38,13 @@
 
 <section id="focus" hidden aria-label="Report viewer">
   <div id="focus-bar">
-    <button type="button" id="focus-back" class="chip-btn solid">← Back to wall</button>
+    <button type="button" id="focus-back" class="chip-btn solid" aria-label="Back to wall">← <span class="wide">&nbsp;Back to wall</span><span class="narrow">&nbsp;Back</span></button>
     <div id="focus-title"><b></b><span></span></div>
     <div id="focus-actions">
       <button type="button" id="focus-prev" class="chip-btn" title="Previous report">‹</button>
       <span id="focus-pos"></span>
       <button type="button" id="focus-next" class="chip-btn" title="Next report">›</button>
-      <a id="focus-open" class="chip-btn" target="_blank" rel="noopener">Open in new tab</a>
+      <a id="focus-open" class="chip-btn" target="_blank" rel="noopener" aria-label="Open in new tab"><span class="wide">Open in new tab</span><span class="narrow">↗</span></a>
     </div>
   </div>
   <iframe id="focus-frame" title="Report"></iframe>

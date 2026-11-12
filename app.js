@@ -29,19 +29,6 @@ const DEPT_META = {
   support: { label: 'Support', color: '#14c8a4' },
 };
 const ASSISTANT = { id: 'assistant', label: 'Personal Assistant', color: '#dbe4ff' };
-const OUTBOUND_BOARD_URL = 'https://dgubbay.github.io/bcs-outbound-board/';
-const OUTBOUND = { id: 'outbound', label: 'Outbound', color: '#00B7D1', virtual: true, live: true };
-const OUTBOUND_PANELS = [
-  { key: 'board', title: 'This week' },
-  { key: '30d', title: '30 days' },
-  { key: 'leads', title: 'Leads' },
-  { key: 'outbound', title: 'Outbound meetings' },
-  { key: 'newdeals', title: 'New opportunities' },
-  { key: 'wins', title: 'Closed won' },
-  { key: 'quota', title: 'Quota' },
-  { key: 'thisq', title: 'Q4 pipeline' },
-  { key: 'nextq', title: 'Q1 pipeline' },
-];
 const FALLBACK_COLORS = ['#5b8def', '#d98a2b', '#3fae8f', '#c05ad6', '#d65a7a', '#7fa33a'];
 
 const $ = (id) => document.getElementById(id);
@@ -121,38 +108,6 @@ async function fetchText(url) {
   return res.text();
 }
 
-// Live outbound TV board: public page at OUTBOUND_BOARD_URL, already split into
-// hash-pinned slides. We fetch the HTML (CORS is open) and render each slide as
-// a static srcdoc panel, then refresh on the same 5-minute cadence as the feed.
-const outboundCache = { html: '', updated: '', fetchedAt: 0 };
-function parseOutboundUpdated(html) {
-  const m = html.match(/updated\s*<b>([^<]+)<\/b>\s*(MT)?/i);
-  if (!m) return '';
-  return (m[1].trim() + (m[2] ? ' MT' : '')).trim();
-}
-function prepareOutboundPanel(html, key) {
-  let out = html.replace(/<meta\s+http-equiv=["']refresh["'][^>]*>/i, '');
-  out = out.replace(/<script\b[\s\S]*?<\/script>/gi, '');
-  out = out.replace(/<section\s+class="slide([^"]*)"([^>]*)>/g, (tag, cls, rest) => {
-    const km = /data-key="([^"]+)"/.exec(tag);
-    const on = km && km[1] === key;
-    const classes = ('slide' + cls.replace(/\bactive\b/g, '') + (on ? ' active' : '')).replace(/\s+/g, ' ').trim();
-    return `<section class="${classes}"${rest}>`;
-  });
-  const inject = `<base href="${OUTBOUND_BOARD_URL}"><style>#nav,#prog,#stale{display:none!important}html,body{overflow:hidden!important}</style>`;
-  if (/<head[^>]*>/i.test(out)) return out.replace(/<head[^>]*>/i, (h) => h + inject);
-  return inject + out;
-}
-async function loadOutboundBoard() {
-  const html = await fetchText(OUTBOUND_BOARD_URL);
-  outboundCache.html = html;
-  outboundCache.updated = parseOutboundUpdated(html);
-  outboundCache.fetchedAt = Date.now();
-  const d = depts.find((x) => x.live);
-  if (d) for (const r of d.reports) r.updated = outboundCache.updated;
-  return outboundCache;
-}
-
 let hashed = null;          // hex key derived from the password
 let hubCipher = null;       // { msg, salt } of the hub index
 const reportHtml = new Map();   // href -> Promise<string>
@@ -213,29 +168,8 @@ const isAssistantLand = (land) => /^(assistant|personal[-_ ]?assistant|digests?)
 /** Every report once, even when it shows in both its department and the Personal Assistant section. */
 function uniqueReports(list = depts) {
   const seen = new Map();
-  for (const d of list) {
-    if (d.live) continue;
-    for (const r of d.reports) seen.set(r.href, r);
-  }
+  for (const d of list) for (const r of d.reports) seen.set(r.href, r);
   return [...seen.values()];
-}
-function outboundDept() {
-  return {
-    id: OUTBOUND.id,
-    label: OUTBOUND.label,
-    color: OUTBOUND.color,
-    virtual: true,
-    live: true,
-    reports: OUTBOUND_PANELS.map((s) => ({
-      href: `${OUTBOUND_BOARD_URL}#${s.key}`,
-      title: s.title,
-      key: s.key,
-      bot: 'Outbound Board',
-      live: true,
-      updated: outboundCache.updated || '',
-    })),
-    newCount: 0,
-  };
 }
 
 function buildDepts(manifest) {
@@ -249,10 +183,6 @@ function buildDepts(manifest) {
   }
   const reports = [...picked.values()].sort(byNewest);
   out.unshift({ id: ASSISTANT.id, label: ASSISTANT.label, color: ASSISTANT.color, virtual: true, reports, newCount: reports.filter((r) => r.isNew).length });
-  const outbound = outboundDept();
-  const salesIdx = out.findIndex((d) => d.id === 'sales');
-  if (salesIdx >= 0) out.splice(salesIdx + 1, 0, outbound);
-  else out.push(outbound);
   return out;
 }
 function deptFromLand() {
@@ -446,16 +376,19 @@ let mode = 'overview';      // 'overview' | 'room' | 'focus'
 let busy = false;           // a camera transition is running
 let current = null;         // department whose room is open
 let focusIdx = -1;
-const ov = { w: 0, h: 0, home: 3000, enter: 700 };
-const rm = { w: 0, h: 0, home: 2000, focus: 700, cy: 0, tall: false, screens: [], surround: false, radius: 0, viewDist: 1 };
-const look = { yaw: 0, pitch: 0, gy: 0, gp: 0 };
-const MAX_PITCH = THREE.MathUtils.degToRad(42);
-const isSurround = () => mode === 'room' && rm.surround;
-const resetLook = () => { look.yaw = look.pitch = look.gy = look.gp = 0; };
+const ov = { w: 0, h: 0, home: 3000, enter: 700, cy: 0 };
+const rm = { w: 0, h: 0, home: 2000, focus: 700, cy: 0, tall: false, screens: [] };
 
 const planeZ = () => (mode === 'overview' ? 0 : ROOM_Z);
 /** Camera distance that fits a w x h curved grid, allowing for its edges bending toward the viewer. */
-const fitDistance = (w, h, radius, pad = 1.2) => Math.max(h / 2 / TAN, w / 2 / (TAN * (W / H))) * pad + radius * (1 - Math.cos(w / 2 / radius));
+const INSET_TOP = 58;                                  // the HUD
+const insetBottom = () => (coarse ? 14 : 54);          // the hint pill (it fades away on touch screens)
+function fitDistance(w, h, radius, pad = 1.2) {
+  const free = Math.max(0.5, (H - INSET_TOP - insetBottom()) / H);   // share of the height the HUD leaves free
+  return Math.max(h / 2 / TAN / free, w / 2 / (TAN * (W / H))) * pad + radius * (1 - Math.cos(w / 2 / radius));
+}
+/** How far to raise the camera at `dist` so content sits centred in the free area below the HUD. */
+const insetLift = (dist) => ((INSET_TOP - insetBottom()) / 2) * ((2 * dist * TAN) / H);
 /** Distance at which a w x h panel fills `fh` of the viewport height or `fw` of its width. */
 const fillDistance = (w, h, fh, fw) => Math.max(h / 2 / TAN / fh, w / 2 / (TAN * (W / H)) / fw);
 
@@ -496,7 +429,7 @@ function countUp(node, to) {
   requestAnimationFrame(step);
 }
 
-const noun = (d, n) => (d.live ? 'live screen' : d.virtual ? 'digest' : 'report') + (n === 1 ? '' : 's');
+const noun = (d, n) => (d.virtual ? 'digest' : 'report') + (n === 1 ? '' : 's');
 
 function cardElement(d, i) {
   const card = el('div', d.newCount ? 'card hot' : 'card');
@@ -510,7 +443,6 @@ function cardElement(d, i) {
   const inner = el('div', 'card-inner');
   const top = el('div', 'card-top');
   top.append(el('span', 'card-dot'), el('span', 'card-name', d.label));
-  if (d.live) top.append(el('span', 'pill-live', 'LIVE'));
   if (d.newCount) top.append(el('span', 'pill-new', `${d.newCount} new`));
   const count = el('div', 'card-count');
   const big = el('b', null, String(n));
@@ -521,8 +453,7 @@ function cardElement(d, i) {
     const list = el('ul', 'card-latest');
     for (const r of d.reports.slice(0, 3)) {
       const li = el('li');
-      const when = d.live ? (r.updated || 'Live') : fmtShort(r.date);
-      li.append(el('span', null, r.title || 'Report'), el('time', null, when));
+      li.append(el('span', null, r.title || 'Report'), el('time', null, fmtShort(r.date)));
       list.append(li);
     }
     inner.append(list);
@@ -573,9 +504,14 @@ function buildOverview() {
 }
 
 function layoutOverview() {
-  const aspect = W / H, n = depts.length;
-  const cols = Math.max(1, Math.min(n, aspect < 0.8 ? 2 : aspect < 1.3 ? 3 : 4));
-  const grid = curvedGrid(n, cols, CARD_W, CARD_H, CARD_GX, CARD_GY, OV_RADIUS);
+  // try every column count and keep the one that shows the cards largest on this screen
+  const n = depts.length, TITLE_H = 400;
+  let grid = null, home = Infinity;
+  for (let cols = 1; cols <= Math.max(1, Math.min(n, 4)); cols++) {
+    const g = curvedGrid(n, cols, CARD_W, CARD_H, CARD_GX, CARD_GY, OV_RADIUS);
+    const dist = fitDistance(g.w, g.h + TITLE_H, OV_RADIUS, 1.07);
+    if (dist < home) { grid = g; home = dist; }
+  }
   depts.forEach((d, i) => {
     const p = grid.items[i];
     d.base = p;
@@ -592,7 +528,10 @@ function layoutOverview() {
   });
   ov.w = grid.w; ov.h = grid.h;
   if (ovTitle) ovTitle.position.set(0, grid.h / 2 + 225, 0);
-  ov.home = fitDistance(grid.w, grid.h + 2 * 390, OV_RADIUS, 1.12);
+  ov.home = home;
+  ov.cy = (TITLE_H - 10) / 2 + insetLift(home);          // centre of title + grid
+  // small screens: cards switch to a bolder layout that stays readable when tiny
+  document.body.classList.toggle('compact', CARD_W * (H / 2 / TAN) / home < 250);
   ov.enter = Math.min(ov.home * 0.6, fillDistance(CARD_W, CARD_H, 0.68, 0.86));
 }
 
@@ -609,12 +548,9 @@ function screenElement(d, report, idx) {
   scr.setAttribute('aria-label', `${report.title || 'Report'}, ${fmtLong(report.date)}. Open report.`);
   const inner = el('div', 'screen-inner');
   const head = el('header');
-  if (report.live) head.append(el('span', 'badge live', 'LIVE'));
-  else if (report.isNew) head.append(el('span', 'badge', 'NEW'));
+  if (report.isNew) head.append(el('span', 'badge', 'NEW'));
   head.append(el('h3', null, report.title || 'Report'));
-  head.append(el('span', 'meta', report.live
-    ? ['Live', report.updated].filter(Boolean).join(' · ')
-    : [fmtShort(report.date), report.bot].filter(Boolean).join(' · ')));
+  head.append(el('span', 'meta', [fmtShort(report.date), report.bot].filter(Boolean).join(' · ')));
   const frame = el('div', 'frame');
   const iframe = document.createElement('iframe');
   iframe.tabIndex = -1;
@@ -628,14 +564,6 @@ function screenElement(d, report, idx) {
 
 async function fillScreen(rec) {
   try {
-    if (rec.report.live) {
-      if (!outboundCache.html) await loadOutboundBoard();
-      if (!rec.alive) return;
-      rec.iframe.srcdoc = prepareOutboundPanel(outboundCache.html, rec.report.key);
-      rec.iframe.addEventListener('load', () => rec.scr.classList.add('ready'), { once: true });
-      rec.scr.classList.remove('failed');
-      return;
-    }
     const html = await loadReportHtml(rec.report);
     if (!rec.alive) return;
     rec.iframe.srcdoc = prepareHtml(html, rec.report, true);
@@ -643,7 +571,7 @@ async function fillScreen(rec) {
   } catch (_) {
     if (!rec.alive) return;
     rec.scr.classList.add('failed');
-    rec.scr.querySelector('.skeleton').textContent = rec.report.live ? 'Could not load the outbound board' : 'Could not load this report';
+    rec.scr.querySelector('.skeleton').textContent = 'Could not load this report';
   }
 }
 
@@ -655,9 +583,6 @@ function clearRoom() {
 
 function buildRoom(d) {
   clearRoom();
-  rm.surround = !!d.live;
-  rm.viewDist = 1;
-  if (rm.surround) resetLook();
   const n = d.reports.length;
   const title = el('div', 'room-title');
   title.style.setProperty('--c', d.color);
@@ -691,43 +616,7 @@ function buildRoom(d) {
   layoutRoom();
 }
 
-function layoutSurroundRoom() {
-  const n = rm.screens.length || 1;
-  const sw = SCREEN_W * SCREEN_S, sh = SCREEN_H * SCREEN_S;
-  const gap = 70;
-  const radius = Math.max(1200, (n * (sw + gap)) / (Math.PI * 2));
-  rm.radius = radius;
-  rm.screens.forEach((rec, i) => {
-    const a = (i / n) * Math.PI * 2;
-    rec.obj.position.set(Math.sin(a) * radius, 0, -Math.cos(a) * radius);
-    rec.obj.rotation.y = a;
-  });
-  if (rm.titleObj) {
-    rm.titleObj.position.set(0, sh / 2 + (W / H < 0.8 ? 240 : 170), -radius);
-    rm.titleObj.rotation.y = 0;
-  }
-  rm.w = radius * 2;
-  rm.h = sh;
-  rm.home = 0;
-  rm.cy = 0;
-  rm.tall = false;
-  rm.focus = 0;
-  if (rm.titleObj) rm.titleObj.scale.setScalar(W / H < 0.8 ? 0.28 : 0.4);
-  const fov = surroundFov();
-  if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
-}
-
-/** Vertical FOV that keeps the front outbound screen in frame, even on a tall phone. */
-function surroundFov() {
-  const sw = SCREEN_W * SCREEN_S;
-  const dist = rm.radius || 1200;
-  const needH = 2 * Math.atan((sw / 2) * 1.2 / dist);
-  const vFromH = 2 * Math.atan(Math.tan(needH / 2) / Math.max(0.35, W / H));
-  return THREE.MathUtils.clamp(Math.max(FOV, THREE.MathUtils.radToDeg(vFromH)), FOV, 75);
-}
-
 function layoutRoom() {
-  if (rm.surround) { layoutSurroundRoom(); return; }
   const n = rm.screens.length, aspect = W / H;
   const sw = SCREEN_W * SCREEN_S, sh = SCREEN_H * SCREEN_S;
   const maxCols = aspect < 0.8 ? 1 : aspect < 1.3 ? 2 : n <= 4 ? 4 : n <= 6 ? 3 : 4;
@@ -745,13 +634,16 @@ function layoutRoom() {
   rm.w = wallW; rm.h = wallH;
   const head = titleGap + titleH;
   const rows = Math.max(1, Math.ceil(n / cols));
-  const fitAll = fitDistance(wallW, wallH + head + 120, ROOM_RADIUS, 1.14);
-  // a long wall opens on its first three rows; drag to see the rest
-  const fitTop = fitDistance(wallW, Math.min(rows, 3) * (sh + SCR_GY) + head + 120, ROOM_RADIUS, 1.14);
+  const fitAll = fitDistance(wallW, wallH + head + 100, ROOM_RADIUS, 1.1);
+  // a long wall opens on its first rows (three on wide screens, under two on a phone); drag to see the rest
+  const shown = aspect < 0.8 ? 1.6 : 3;
+  const fitTop = fitDistance(wallW, Math.min(rows, shown) * (sh + SCR_GY) + head + 100, ROOM_RADIUS, 1.1);
   rm.home = Math.min(fitAll, fitTop);
-  rm.tall = rows > 3;
+  rm.tall = rows > shown;
   const top = wallH / 2 + head;
-  rm.cy = rm.tall ? top + 120 - rm.home * TAN : head / 2 - 20;     // centre of what the home view shows
+  const wpp = (2 * rm.home * TAN) / H;
+  // centre of what the home view shows: the whole wall, or its top edge tucked under the HUD
+  rm.cy = rm.tall ? top + 30 + INSET_TOP * wpp - rm.home * TAN : head / 2 - 20 + insetLift(rm.home);
   rm.focus = Math.min(rm.home * 0.7, fillDistance(sw, sh, 0.8, 0.92));
 }
 
@@ -780,12 +672,8 @@ function clampGoal() {
   const g = cam.goal;
   if (mode === 'overview') {
     g.x = THREE.MathUtils.clamp(g.x, -ov.w / 2, ov.w / 2);
-    g.y = THREE.MathUtils.clamp(g.y, -ov.h / 2, ov.h / 2);
-    if (g.z >= ov.home) { g.x *= 0.5; g.y *= 0.5; }
-  } else if (rm.surround) {
-    g.x = 0;
-    g.y = rm.cy;
-    g.z = ROOM_Z;
+    g.y = THREE.MathUtils.clamp(g.y, -ov.h / 2, ov.h / 2 + 260);
+    if (g.z >= ov.home) { g.x *= 0.5; g.y += (ov.cy - g.y) * 0.5; }
   } else {
     g.x = THREE.MathUtils.clamp(g.x, -rm.w / 2, rm.w / 2);
     g.y = THREE.MathUtils.clamp(g.y, -rm.h / 2, Math.max(rm.cy, rm.h / 2 + 200));
@@ -815,17 +703,6 @@ function zoomAt(cx, cy, factor) {
       if (nd >= dist) return;
     }
     nd = Math.min(nd, ov.home * 1.1);
-  } else if (rm.surround) {
-    rm.viewDist *= factor;
-    if (factor > 1 && rm.viewDist > 1.32) { rm.viewDist = 1; leaveRoom(); return; }
-    if (factor < 1) {
-      const scr = hitAt(cx, cy, '.screen');
-      if (scr) { rm.viewDist = 1; openFocus(Number(scr.dataset.idx)); return; }
-      rm.viewDist = Math.max(rm.viewDist, 0.85);
-    }
-    rm.viewDist = THREE.MathUtils.clamp(rm.viewDist, 0.85, 1.35);
-    updateHint();
-    return;
   } else {
     if (factor > 1 && nd > rm.home * 1.32) { leaveRoom(); return; }
     if (factor < 1 && nd < rm.focus) {
@@ -844,16 +721,6 @@ function zoomAt(cx, cy, factor) {
 
 function panBy(dx, dy) {
   if (busy || mode === 'focus') return;
-  if (isSurround()) {
-    const sens = 0.0048;
-    look.gy += dx * sens;
-    look.gp = THREE.MathUtils.clamp(look.gp + dy * sens * 0.75, -MAX_PITCH, MAX_PITCH);
-    // keep yaw in a small range so the values don't grow without bound
-    if (look.gy > Math.PI) { look.gy -= Math.PI * 2; look.yaw -= Math.PI * 2; }
-    if (look.gy < -Math.PI) { look.gy += Math.PI * 2; look.yaw += Math.PI * 2; }
-    updateHint();
-    return;
-  }
   const wpp = (2 * (cam.goal.z - planeZ()) * TAN) / H;
   cam.goal.x -= dx * wpp;
   cam.goal.y += dy * wpp;
@@ -884,8 +751,7 @@ async function enterRoom(d, instant = false) {
   buildRoom(d);
   mode = 'room';
   const home = roomHome();
-  const start = home.clone();
-  start.z = ROOM_Z + (rm.surround ? Math.max(400, (rm.radius || 1200) * 0.28) : rm.home * 1.9);
+  const start = home.clone(); start.z = ROOM_Z + rm.home * 1.9;
   els.fade.style.opacity = '1';
   updateHud();
   warpTarget = 0;
@@ -906,9 +772,6 @@ async function leaveRoom() {
   await tween(330, (k) => { cam.pos.lerpVectors(from, out, k); els.fade.style.opacity = String(k); }, easeIn);
   const d = current;
   clearRoom();
-  rm.surround = false;
-  resetLook();
-  if (Math.abs(camera.fov - FOV) > 0.01) { camera.fov = FOV; camera.updateProjectionMatrix(); }
   room.visible = false;
   overview.visible = true;
   mode = 'overview';
@@ -916,7 +779,7 @@ async function leaveRoom() {
   setAccent('#9a4dff');
   updateHud();
   const start = new THREE.Vector3(d.base.x, d.base.y, d.base.z + ov.enter * 0.8);
-  const home = new THREE.Vector3(0, 0, ov.home);
+  const home = new THREE.Vector3(0, ov.cy, ov.home);
   warpTarget = 0;
   await tween(750, (k) => { cam.pos.lerpVectors(start, home, k); els.fade.style.opacity = String(1 - Math.min(1, k * 2.2)); }, easeOut);
   cam.goal.copy(home);
@@ -932,29 +795,19 @@ async function showFocusReport(idx) {
   const d = current, report = d.reports[idx];
   focusIdx = idx;
   els.focusTitle.querySelector('b').textContent = report.title || 'Report';
-  els.focusTitle.querySelector('span').textContent = report.live
-    ? [d.label, 'Live', report.updated].filter(Boolean).join(' · ')
-    : [d.label, fmtLong(report.date), report.bot].filter(Boolean).join(' · ');
+  els.focusTitle.querySelector('span').textContent = [d.label, fmtLong(report.date), report.bot].filter(Boolean).join(' · ');
   els.focusPos.textContent = `${idx + 1} of ${d.reports.length}`;
   els.focusPrev.disabled = idx <= 0;
   els.focusNext.disabled = idx >= d.reports.length - 1;
-  els.focusOpen.href = report.live ? report.href : new URL(report.href, HUB_BASE).href;
-  els.focusOpen.textContent = report.live ? 'Open live board' : 'Open in new tab';
-  els.focusFrame.removeAttribute('src');
+  els.focusOpen.href = new URL(report.href, HUB_BASE).href;
   els.focusFrame.srcdoc = '<body style="margin:0;background:#0f1622"></body>';
   try {
-    if (report.live) {
-      if (!outboundCache.html) await loadOutboundBoard();
-      if (mode !== 'focus' || focusIdx !== idx) return;
-      els.focusFrame.srcdoc = prepareOutboundPanel(outboundCache.html, report.key);
-      return;
-    }
     const html = await loadReportHtml(report);
     if (mode !== 'focus' || focusIdx !== idx) return;
     els.focusFrame.srcdoc = prepareHtml(html, report, false);
   } catch (_) {
     if (mode !== 'focus' || focusIdx !== idx) return;
-    els.focusFrame.srcdoc = `<body style="margin:0;display:grid;place-items:center;height:100vh;font:16px system-ui;background:#0f1622;color:#e39a8a">${report.live ? 'Could not load the outbound board.' : 'Could not load this report.'}</body>`;
+    els.focusFrame.srcdoc = '<body style="margin:0;display:grid;place-items:center;height:100vh;font:16px system-ui;background:#0f1622;color:#e39a8a">Could not load this report.</body>';
   }
 }
 
@@ -979,7 +832,7 @@ function closeFocus() {
   if (mode !== 'focus') return;
   const rec = rm.screens[focusIdx];
   mode = 'room';
-  const done = () => { els.focus.hidden = true; els.focusFrame.removeAttribute('src'); els.focusFrame.srcdoc = ''; };
+  const done = () => { els.focus.hidden = true; els.focusFrame.srcdoc = ''; };
   if (!reducedMotion && els.focus.animate && rec) {
     const rect = rec.scr.getBoundingClientRect();
     const a = els.focus.animate([
@@ -1023,23 +876,27 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { els.toast.hidden = true; }, 4200);
 }
+let lastHint = '', hintTimer = 0;
 function updateHint() {
   let text;
-  if (mode === 'overview') text = coarse ? 'Pinch to zoom · Drag to move · Zoom into a department to open it' : 'Scroll or pinch to zoom · Drag to move · Zoom into a department to open it';
+  if (mode === 'overview') text = coarse ? 'Tap or pinch into a section to open it' : 'Scroll or pinch to zoom · Drag to move · Zoom into a department to open it';
   else if (mode === 'room') {
-    if (rm.surround) {
-      text = rm.viewDist > 1.04
-        ? 'Keep zooming out to return to all departments'
-        : 'Drag or use arrow keys to look around · Click a screen to open it · Zoom out or Esc to go back';
-    } else {
-      text = cam.goal.z - ROOM_Z > rm.home * 1.04
-        ? 'Keep zooming out to return to all departments'
-        : !rm.screens.length ? 'Zoom out to go back to all departments'
-        : `Zoom into a report to open it · Drag to ${rm.tall ? 'see more' : 'move'} · Zoom out to go back`;
-    }
+    text = cam.goal.z - ROOM_Z > rm.home * 1.04
+      ? (coarse ? 'Keep pinching out to go back' : 'Keep zooming out to return to all departments')
+      : !rm.screens.length ? (coarse ? 'Pinch out to go back' : 'Zoom out to go back to all departments')
+      : coarse ? `Tap a report to open it · ${rm.tall ? 'Drag to scroll · ' : ''}Pinch out to go back`
+      : `Zoom into a report to open it · Drag to ${rm.tall ? 'see more' : 'move'} · Zoom out to go back`;
   }
-  els.hint.hidden = mode === 'focus' || !text;
-  if (text) els.hint.textContent = text;
+  if (mode === 'focus' || !text) { els.hint.hidden = true; lastHint = ''; return; }
+  if (coarse) {
+    // on touch screens the hint shows briefly when it changes, then gets out of the way
+    if (text === lastHint) return;
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => { els.hint.hidden = true; }, 6000);
+  }
+  lastHint = text;
+  els.hint.hidden = false;
+  els.hint.textContent = text;
 }
 function updateHud() {
   const inRoom = mode !== 'overview' && current;
@@ -1054,8 +911,8 @@ function updateStatus(manifest) {
   els.status.textContent = `${total} report${total === 1 ? '' : 's'}${stamp ? ` · feed updated ${stamp}` : ''}`;
 }
 
-els.crumbHome.addEventListener('click', () => { if (mode === 'focus') closeFocus(); if (mode === 'room') leaveRoom(); else if (!busy) { cam.goal.set(0, 0, ov.home); } });
-els.crumbDept.addEventListener('click', () => { if (mode === 'focus') closeFocus(); else if (mode === 'room' && !busy) { if (rm.surround) { resetLook(); rm.viewDist = 1; } cam.goal.copy(roomHome()); } });
+els.crumbHome.addEventListener('click', () => { if (mode === 'focus') closeFocus(); if (mode === 'room') leaveRoom(); else if (!busy) { cam.goal.set(0, ov.cy, ov.home); } });
+els.crumbDept.addEventListener('click', () => { if (mode === 'focus') closeFocus(); else if (mode === 'room' && !busy) cam.goal.copy(roomHome()); });
 els.focusBack.addEventListener('click', closeFocus);
 els.focusPrev.addEventListener('click', () => { if (focusIdx > 0) showFocusReport(focusIdx - 1); });
 els.focusNext.addEventListener('click', () => { if (current && focusIdx < current.reports.length - 1) showFocusReport(focusIdx + 1); });
@@ -1179,8 +1036,9 @@ function resize() {
   if (depts.length) layoutOverview();
   if (mode !== 'overview' && current) layoutRoom();
   if (!busy) {
-    if (mode === 'overview') cam.goal.z = Math.min(cam.goal.z, ov.home * 1.1);
-    clampGoal();
+    // a rotated or resized screen starts again from the fitted view
+    if (mode === 'overview') cam.goal.set(0, ov.cy, ov.home);
+    else cam.goal.copy(roomHome());
   }
 }
 let sized = false;
@@ -1197,20 +1055,11 @@ function frame(now) {
   last = now;
   if (!busy) cam.pos.lerp(cam.goal, 1 - Math.exp(-dt * 12));
   camera.position.copy(cam.pos);
-  if (rm.surround && mode !== 'overview') {
-    const k = 1 - Math.exp(-dt * 12);
-    look.yaw += (look.gy - look.yaw) * k;
-    look.pitch += (look.gp - look.pitch) * k;
-    camera.rotation.order = 'YXZ';
-    camera.rotation.set(look.pitch, look.yaw, 0);
-  } else {
-    // slight parallax from the mouse so the scene reads as 3D
-    const want = mouse.active && !reducedMotion && pointers.size === 0 ? mouse : { x: 0, y: 0 };
-    rot.y += (-want.x * 0.035 - rot.y) * Math.min(1, dt * 5);
-    rot.x += (-want.y * 0.022 - rot.x) * Math.min(1, dt * 5);
-    camera.rotation.order = 'XYZ';
-    camera.rotation.set(rot.x, rot.y, 0);
-  }
+  // slight parallax from the mouse so the scene reads as 3D
+  const want = mouse.active && !reducedMotion && pointers.size === 0 ? mouse : { x: 0, y: 0 };
+  rot.y += (-want.x * 0.035 - rot.y) * Math.min(1, dt * 5);
+  rot.x += (-want.y * 0.022 - rot.x) * Math.min(1, dt * 5);
+  camera.rotation.set(rot.x, rot.y, 0);
 
   if (mode === 'overview' && !reducedMotion) {
     depts.forEach((d, i) => {
@@ -1232,7 +1081,7 @@ function frame(now) {
       flow.z = (flow.z + dt * (70 + warp * 15000) * (warp > 0.01 ? warpDir : 1) + STAR_BOX.z) % STAR_BOX.z;
       flow.x = (flow.x + dt * 22) % STAR_BOX.x;
       flow.y = (flow.y + dt * 6) % STAR_BOX.y;
-      const fov = ((rm.surround && mode !== 'overview') ? surroundFov() : FOV) + warp * 9;
+      const fov = FOV + warp * 9;
       if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
       for (const s of nebulae) {
         const { x, y, i } = s.userData, t = uTime.value;
@@ -1285,44 +1134,10 @@ async function refresh(manual = false) {
   refreshing = true;
   try {
     applyManifest(await loadManifest(), manual ? 'manual' : true);
-    await refreshOutbound(manual);
   } catch (err) {
     if (err.message === 'locked') { location.reload(); return; }
     if (manual) toast('Could not reach the reports feed');
   } finally { refreshing = false; }
-}
-
-async function refreshOutbound(manual = false) {
-  try {
-    const prev = outboundCache.updated;
-    await loadOutboundBoard();
-    if (current && current.live) {
-      if (mode === 'room') {
-        for (const rec of rm.screens) {
-          if (!rec.alive || !rec.report.live) continue;
-          rec.scr.classList.remove('ready');
-          rec.iframe.srcdoc = prepareOutboundPanel(outboundCache.html, rec.report.key);
-          rec.iframe.addEventListener('load', () => rec.scr.classList.add('ready'), { once: true });
-          const meta = rec.scr.querySelector('.meta');
-          if (meta) meta.textContent = ['Live', rec.report.updated].filter(Boolean).join(' · ');
-        }
-      }
-      if (mode === 'focus' && current.reports[focusIdx]) await showFocusReport(focusIdx);
-    }
-    if (manual && mode !== 'focus') {
-      const d = depts.find((x) => x.live);
-      if (d && d.obj) {
-        // refresh the card's "updated" stamps in place
-        d.obj.element.querySelectorAll('.card-latest time').forEach((t, i) => {
-          const r = d.reports[i];
-          if (r) t.textContent = r.updated || 'Live';
-        });
-      }
-    }
-    if (manual && outboundCache.updated && outboundCache.updated !== prev) toast('Outbound board updated');
-  } catch (_) {
-    if (manual) toast('Could not reach the outbound board');
-  }
 }
 
 function shootingStar() {
@@ -1347,21 +1162,13 @@ function start(manifest) {
   els.hud.hidden = false;
   resize();
   applyManifest(manifest, false);
-  cam.pos.set(0, 0, ov.home * 1.5);
-  cam.goal.set(0, 0, ov.home);
+  cam.pos.set(0, ov.cy, ov.home * 1.5);
+  cam.goal.set(0, ov.cy, ov.home);
   updateHud();
   requestAnimationFrame((t) => { last = t; frame(t); });
   const wanted = decodeURIComponent(location.hash.slice(1));
   const d = depts.find((x) => x.id === wanted);
   if (d) enterRoom(d, true);
-  loadOutboundBoard().then(() => {
-    const ob = depts.find((x) => x.live);
-    if (!ob || !ob.obj || !outboundCache.updated) return;
-    ob.obj.element.querySelectorAll('.card-latest time').forEach((t, i) => {
-      const r = ob.reports[i];
-      if (r) t.textContent = r.updated || 'Live';
-    });
-  }).catch(() => {});
   if (!reducedMotion) setTimeout(shootingStar, 2500);
   setInterval(() => { if (!document.hidden) refresh(false); }, REFRESH_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(false); });
