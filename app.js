@@ -29,6 +29,19 @@ const DEPT_META = {
   support: { label: 'Support', color: '#14c8a4' },
 };
 const ASSISTANT = { id: 'assistant', label: 'Personal Assistant', color: '#dbe4ff' };
+const OUTBOUND_BOARD_URL = 'https://dgubbay.github.io/bcs-outbound-board/';
+const OUTBOUND = { id: 'outbound', label: 'Outbound', color: '#00B7D1', virtual: true, live: true };
+const OUTBOUND_PANELS = [
+  { key: 'board', title: 'This week' },
+  { key: '30d', title: '30 days' },
+  { key: 'leads', title: 'Leads' },
+  { key: 'outbound', title: 'Outbound meetings' },
+  { key: 'newdeals', title: 'New opportunities' },
+  { key: 'wins', title: 'Closed won' },
+  { key: 'quota', title: 'Quota' },
+  { key: 'thisq', title: 'Q4 pipeline' },
+  { key: 'nextq', title: 'Q1 pipeline' },
+];
 const FALLBACK_COLORS = ['#5b8def', '#d98a2b', '#3fae8f', '#c05ad6', '#d65a7a', '#7fa33a'];
 
 const $ = (id) => document.getElementById(id);
@@ -108,6 +121,38 @@ async function fetchText(url) {
   return res.text();
 }
 
+// Live outbound TV board: public page at OUTBOUND_BOARD_URL, already split into
+// hash-pinned slides. We fetch the HTML (CORS is open) and render each slide as
+// a static srcdoc panel, then refresh on the same 5-minute cadence as the feed.
+const outboundCache = { html: '', updated: '', fetchedAt: 0 };
+function parseOutboundUpdated(html) {
+  const m = html.match(/updated\s*<b>([^<]+)<\/b>\s*(MT)?/i);
+  if (!m) return '';
+  return (m[1].trim() + (m[2] ? ' MT' : '')).trim();
+}
+function prepareOutboundPanel(html, key) {
+  let out = html.replace(/<meta\s+http-equiv=["']refresh["'][^>]*>/i, '');
+  out = out.replace(/<script\b[\s\S]*?<\/script>/gi, '');
+  out = out.replace(/<section\s+class="slide([^"]*)"([^>]*)>/g, (tag, cls, rest) => {
+    const km = /data-key="([^"]+)"/.exec(tag);
+    const on = km && km[1] === key;
+    const classes = ('slide' + cls.replace(/\bactive\b/g, '') + (on ? ' active' : '')).replace(/\s+/g, ' ').trim();
+    return `<section class="${classes}"${rest}>`;
+  });
+  const inject = `<base href="${OUTBOUND_BOARD_URL}"><style>#nav,#prog,#stale{display:none!important}html,body{overflow:hidden!important}</style>`;
+  if (/<head[^>]*>/i.test(out)) return out.replace(/<head[^>]*>/i, (h) => h + inject);
+  return inject + out;
+}
+async function loadOutboundBoard() {
+  const html = await fetchText(OUTBOUND_BOARD_URL);
+  outboundCache.html = html;
+  outboundCache.updated = parseOutboundUpdated(html);
+  outboundCache.fetchedAt = Date.now();
+  const d = depts.find((x) => x.live);
+  if (d) for (const r of d.reports) r.updated = outboundCache.updated;
+  return outboundCache;
+}
+
 let hashed = null;          // hex key derived from the password
 let hubCipher = null;       // { msg, salt } of the hub index
 const reportHtml = new Map();   // href -> Promise<string>
@@ -168,8 +213,29 @@ const isAssistantLand = (land) => /^(assistant|personal[-_ ]?assistant|digests?)
 /** Every report once, even when it shows in both its department and the Personal Assistant section. */
 function uniqueReports(list = depts) {
   const seen = new Map();
-  for (const d of list) for (const r of d.reports) seen.set(r.href, r);
+  for (const d of list) {
+    if (d.live) continue;
+    for (const r of d.reports) seen.set(r.href, r);
+  }
   return [...seen.values()];
+}
+function outboundDept() {
+  return {
+    id: OUTBOUND.id,
+    label: OUTBOUND.label,
+    color: OUTBOUND.color,
+    virtual: true,
+    live: true,
+    reports: OUTBOUND_PANELS.map((s) => ({
+      href: `${OUTBOUND_BOARD_URL}#${s.key}`,
+      title: s.title,
+      key: s.key,
+      bot: 'Outbound Board',
+      live: true,
+      updated: outboundCache.updated || '',
+    })),
+    newCount: 0,
+  };
 }
 
 function buildDepts(manifest) {
@@ -183,6 +249,10 @@ function buildDepts(manifest) {
   }
   const reports = [...picked.values()].sort(byNewest);
   out.unshift({ id: ASSISTANT.id, label: ASSISTANT.label, color: ASSISTANT.color, virtual: true, reports, newCount: reports.filter((r) => r.isNew).length });
+  const outbound = outboundDept();
+  const salesIdx = out.findIndex((d) => d.id === 'sales');
+  if (salesIdx >= 0) out.splice(salesIdx + 1, 0, outbound);
+  else out.push(outbound);
   return out;
 }
 function deptFromLand() {
@@ -377,7 +447,7 @@ let busy = false;           // a camera transition is running
 let current = null;         // department whose room is open
 let focusIdx = -1;
 const ov = { w: 0, h: 0, home: 3000, enter: 700, cy: 0 };
-const rm = { w: 0, h: 0, home: 2000, focus: 700, cy: 0, tall: false, screens: [] };
+const rm = { w: 0, h: 0, home: 2000, focus: 700, cy: 0, tall: false, screens: [], array: false };
 
 const planeZ = () => (mode === 'overview' ? 0 : ROOM_Z);
 /** Camera distance that fits a w x h curved grid, allowing for its edges bending toward the viewer. */
@@ -429,7 +499,7 @@ function countUp(node, to) {
   requestAnimationFrame(step);
 }
 
-const noun = (d, n) => (d.virtual ? 'digest' : 'report') + (n === 1 ? '' : 's');
+const noun = (d, n) => (d.live ? 'live screen' : d.virtual ? 'digest' : 'report') + (n === 1 ? '' : 's');
 
 function cardElement(d, i) {
   const card = el('div', d.newCount ? 'card hot' : 'card');
@@ -443,6 +513,7 @@ function cardElement(d, i) {
   const inner = el('div', 'card-inner');
   const top = el('div', 'card-top');
   top.append(el('span', 'card-dot'), el('span', 'card-name', d.label));
+  if (d.live) top.append(el('span', 'pill-live', 'LIVE'));
   if (d.newCount) top.append(el('span', 'pill-new', `${d.newCount} new`));
   const count = el('div', 'card-count');
   const big = el('b', null, String(n));
@@ -453,7 +524,8 @@ function cardElement(d, i) {
     const list = el('ul', 'card-latest');
     for (const r of d.reports.slice(0, 3)) {
       const li = el('li');
-      li.append(el('span', null, r.title || 'Report'), el('time', null, fmtShort(r.date)));
+      const when = d.live ? (r.updated || 'Live') : fmtShort(r.date);
+      li.append(el('span', null, r.title || 'Report'), el('time', null, when));
       list.append(li);
     }
     inner.append(list);
@@ -539,18 +611,25 @@ function layoutOverview() {
 // room: wall of live report screens
 // ----------------------------------------------------------------------------
 function screenElement(d, report, idx) {
-  const scr = el('div', 'screen');
+  const scr = el('div', d.live ? 'screen zoom-only' : 'screen');
   scr.dataset.idx = String(idx);
   scr.style.setProperty('--i', String(idx));
   scr.style.setProperty('--c', d.color);
-  scr.setAttribute('role', 'button');
-  scr.tabIndex = 0;
-  scr.setAttribute('aria-label', `${report.title || 'Report'}, ${fmtLong(report.date)}. Open report.`);
+  if (d.live) {
+    scr.setAttribute('aria-label', `${report.title || 'Report'}, live`);
+  } else {
+    scr.setAttribute('role', 'button');
+    scr.tabIndex = 0;
+    scr.setAttribute('aria-label', `${report.title || 'Report'}, ${fmtLong(report.date)}. Open report.`);
+  }
   const inner = el('div', 'screen-inner');
   const head = el('header');
-  if (report.isNew) head.append(el('span', 'badge', 'NEW'));
+  if (report.live) head.append(el('span', 'badge live', 'LIVE'));
+  else if (report.isNew) head.append(el('span', 'badge', 'NEW'));
   head.append(el('h3', null, report.title || 'Report'));
-  head.append(el('span', 'meta', [fmtShort(report.date), report.bot].filter(Boolean).join(' · ')));
+  head.append(el('span', 'meta', report.live
+    ? ['Live', report.updated].filter(Boolean).join(' · ')
+    : [fmtShort(report.date), report.bot].filter(Boolean).join(' · ')));
   const frame = el('div', 'frame');
   const iframe = document.createElement('iframe');
   iframe.tabIndex = -1;
@@ -564,6 +643,14 @@ function screenElement(d, report, idx) {
 
 async function fillScreen(rec) {
   try {
+    if (rec.report.live) {
+      if (!outboundCache.html) await loadOutboundBoard();
+      if (!rec.alive) return;
+      rec.iframe.srcdoc = prepareOutboundPanel(outboundCache.html, rec.report.key);
+      rec.iframe.addEventListener('load', () => rec.scr.classList.add('ready'), { once: true });
+      rec.scr.classList.remove('failed');
+      return;
+    }
     const html = await loadReportHtml(rec.report);
     if (!rec.alive) return;
     rec.iframe.srcdoc = prepareHtml(html, rec.report, true);
@@ -571,7 +658,7 @@ async function fillScreen(rec) {
   } catch (_) {
     if (!rec.alive) return;
     rec.scr.classList.add('failed');
-    rec.scr.querySelector('.skeleton').textContent = 'Could not load this report';
+    rec.scr.querySelector('.skeleton').textContent = rec.report.live ? 'Could not load the outbound board' : 'Could not load this report';
   }
 }
 
@@ -583,6 +670,7 @@ function clearRoom() {
 
 function buildRoom(d) {
   clearRoom();
+  rm.array = !!d.live;
   const n = d.reports.length;
   const title = el('div', 'room-title');
   title.style.setProperty('--c', d.color);
@@ -616,7 +704,37 @@ function buildRoom(d) {
   layoutRoom();
 }
 
+/** Front-facing 3x3 (or fewer) curved wall that keeps every outbound panel in view. */
+function layoutOutboundRoom() {
+  const n = rm.screens.length, aspect = W / H;
+  const sw = SCREEN_W * SCREEN_S, sh = SCREEN_H * SCREEN_S;
+  const cols = Math.min(3, Math.max(1, n || 1));
+  const gx = aspect < 0.8 ? 44 : SCR_GX;
+  const gy = aspect < 0.8 ? 44 : SCR_GY;
+  const grid = curvedGrid(n, cols, sw, sh, gx, gy, ROOM_RADIUS);
+  rm.screens.forEach((rec, i) => {
+    const p = grid.items[i];
+    rec.obj.position.set(p.x, p.y, p.z);
+    rec.obj.rotation.y = p.ry;
+  });
+  const wallW = n ? grid.w : 700, wallH = n ? grid.h : 300;
+  const narrow = aspect < 0.8;
+  const titleGap = narrow ? 110 : 150, titleH = narrow ? 110 : 150;
+  if (rm.titleObj) {
+    rm.titleObj.position.set(0, wallH / 2 + titleGap + titleH / 2 - 40, 0);
+    rm.titleObj.rotation.y = 0;
+    rm.titleObj.scale.setScalar(narrow ? 0.42 : 0.6);
+  }
+  rm.w = wallW; rm.h = wallH;
+  const head = titleGap + titleH;
+  rm.home = fitDistance(wallW, wallH + head + 100, ROOM_RADIUS, narrow ? 1.16 : 1.1);
+  rm.tall = false;
+  rm.cy = head / 2 - 20 + insetLift(rm.home);
+  rm.focus = Math.min(rm.home * 0.7, fillDistance(sw, sh, 0.9, 0.94));
+}
+
 function layoutRoom() {
+  if (rm.array) { layoutOutboundRoom(); return; }
   const n = rm.screens.length, aspect = W / H;
   const sw = SCREEN_W * SCREEN_S, sh = SCREEN_H * SCREEN_S;
   const maxCols = aspect < 0.8 ? 1 : aspect < 1.3 ? 2 : n <= 4 ? 4 : n <= 6 ? 3 : 4;
@@ -706,8 +824,10 @@ function zoomAt(cx, cy, factor) {
   } else {
     if (factor > 1 && nd > rm.home * 1.32) { leaveRoom(); return; }
     if (factor < 1 && nd < rm.focus) {
-      const scr = hitAt(cx, cy, '.screen');
-      if (scr) { openFocus(Number(scr.dataset.idx)); return; }
+      if (!rm.array) {
+        const scr = hitAt(cx, cy, '.screen');
+        if (scr) { openFocus(Number(scr.dataset.idx)); return; }
+      }
       nd = Math.max(nd, rm.focus);
       if (nd >= dist) return;
     }
@@ -772,6 +892,7 @@ async function leaveRoom() {
   await tween(330, (k) => { cam.pos.lerpVectors(from, out, k); els.fade.style.opacity = String(k); }, easeIn);
   const d = current;
   clearRoom();
+  rm.array = false;
   room.visible = false;
   overview.visible = true;
   mode = 'overview';
@@ -884,6 +1005,7 @@ function updateHint() {
     text = cam.goal.z - ROOM_Z > rm.home * 1.04
       ? (coarse ? 'Keep pinching out to go back' : 'Keep zooming out to return to all departments')
       : !rm.screens.length ? (coarse ? 'Pinch out to go back' : 'Zoom out to go back to all departments')
+      : rm.array ? (coarse ? 'Pinch to zoom into a screen · Pinch out or Esc to go back' : 'Scroll or pinch to zoom into a screen · Zoom out or Esc to go back')
       : coarse ? `Tap a report to open it · ${rm.tall ? 'Drag to scroll · ' : ''}Pinch out to go back`
       : `Zoom into a report to open it · Drag to ${rm.tall ? 'see more' : 'move'} · Zoom out to go back`;
   }
@@ -935,7 +1057,7 @@ function activate(target) {
     const d = depts.find((x) => x.id === target.dataset.dept);
     if (d) enterRoom(d);
   } else if (target.classList.contains('screen')) {
-    openFocus(Number(target.dataset.idx));
+    if (!rm.array) openFocus(Number(target.dataset.idx));
   }
 }
 
@@ -1001,7 +1123,11 @@ window.addEventListener('keydown', (e) => {
   if (!els.gate.hidden) return;
   const k = e.key;
   if (k === 'Escape') {
-    if (mode === 'focus') closeFocus(); else if (mode === 'room') leaveRoom();
+    if (mode === 'focus') closeFocus();
+    else if (mode === 'room') {
+      if (rm.array && cam.goal.z - ROOM_Z < rm.home * 0.98) cam.goal.copy(roomHome());
+      else leaveRoom();
+    }
     return;
   }
   if (mode === 'focus') {
@@ -1016,8 +1142,10 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   const step = 90;
-  if (k === '+' || k === '=') zoomAt(W / 2, H / 2, 0.8);
-  else if (k === '-' || k === '_') zoomAt(W / 2, H / 2, 1.25);
+  const zx = mouse.active ? (mouse.x + 1) / 2 * W : W / 2;
+  const zy = mouse.active ? (1 - mouse.y) / 2 * H : H / 2;
+  if (k === '+' || k === '=') zoomAt(zx, zy, 0.8);
+  else if (k === '-' || k === '_') zoomAt(zx, zy, 1.25);
   else if (k === 'ArrowLeft') panBy(step, 0);
   else if (k === 'ArrowRight') panBy(-step, 0);
   else if (k === 'ArrowUp') panBy(0, step);
@@ -1134,10 +1262,40 @@ async function refresh(manual = false) {
   refreshing = true;
   try {
     applyManifest(await loadManifest(), manual ? 'manual' : true);
+    await refreshOutbound(manual);
   } catch (err) {
     if (err.message === 'locked') { location.reload(); return; }
     if (manual) toast('Could not reach the reports feed');
   } finally { refreshing = false; }
+}
+
+async function refreshOutbound(manual = false) {
+  try {
+    const prev = outboundCache.updated;
+    await loadOutboundBoard();
+    if (current && current.live && mode === 'room') {
+      for (const rec of rm.screens) {
+        if (!rec.alive || !rec.report.live) continue;
+        rec.scr.classList.remove('ready');
+        rec.iframe.srcdoc = prepareOutboundPanel(outboundCache.html, rec.report.key);
+        rec.iframe.addEventListener('load', () => rec.scr.classList.add('ready'), { once: true });
+        const meta = rec.scr.querySelector('.meta');
+        if (meta) meta.textContent = ['Live', rec.report.updated].filter(Boolean).join(' · ');
+      }
+    }
+    if (manual && mode !== 'focus') {
+      const d = depts.find((x) => x.live);
+      if (d && d.obj) {
+        d.obj.element.querySelectorAll('.card-latest time').forEach((t, i) => {
+          const r = d.reports[i];
+          if (r) t.textContent = r.updated || 'Live';
+        });
+      }
+    }
+    if (manual && outboundCache.updated && outboundCache.updated !== prev) toast('Outbound board updated');
+  } catch (_) {
+    if (manual) toast('Could not reach the outbound board');
+  }
 }
 
 function shootingStar() {
@@ -1169,6 +1327,14 @@ function start(manifest) {
   const wanted = decodeURIComponent(location.hash.slice(1));
   const d = depts.find((x) => x.id === wanted);
   if (d) enterRoom(d, true);
+  loadOutboundBoard().then(() => {
+    const ob = depts.find((x) => x.live);
+    if (!ob || !ob.obj || !outboundCache.updated) return;
+    ob.obj.element.querySelectorAll('.card-latest time').forEach((t, i) => {
+      const r = ob.reports[i];
+      if (r) t.textContent = r.updated || 'Live';
+    });
+  }).catch(() => {});
   if (!reducedMotion) setTimeout(shootingStar, 2500);
   setInterval(() => { if (!document.hidden) refresh(false); }, REFRESH_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(false); });

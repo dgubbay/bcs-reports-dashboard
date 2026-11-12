@@ -4,7 +4,7 @@ A zoomable 3D dashboard over the BCS reports feed.
 
 - **Main view:** one card per department with its report count and latest titles, plus a live **Outbound** card for the TV board.
 - **Zoom in** on a department (scroll, pinch, or click) to enter it and see its reports as a wall of live HTML screens.
-- **Outbound room:** each board panel (this week, 30 days, leads, meetings, and so on) is a static screen mounted around the room. Drag, swipe, or use the arrow keys to look around; click a screen to open it full size.
+- **Outbound room:** each board panel (this week, 30 days, leads, meetings, and so on) is a static live screen on a wall in front of you. Scroll, pinch, or use +/− to zoom toward a screen; zoom out or press Esc to step back. Clicking a screen does nothing.
 - **Zoom in** on a report (or click it) to open it full size. **Zoom out** (or press Esc) to step back, all the way to the main view.
 
 ## Where the reports come from
