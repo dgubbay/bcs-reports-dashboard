@@ -136,17 +136,6 @@ button { font: inherit; color: inherit; }
   animation-delay: calc(var(--i, 0) * 70ms);
 }
 @keyframes materialize { from { opacity: 0; transform: scale(0.86) translateY(46px); filter: brightness(2.4) blur(6px); } }
-/* a band of light that sweeps across each card in turn */
-.card-inner::after {
-  content: ""; position: absolute; top: -20%; bottom: -20%; left: 0; width: 36%; pointer-events: none;
-  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.07) 42%, rgba(255, 255, 255, 0.17) 50%, rgba(255, 255, 255, 0.07) 58%, transparent);
-  transform: translateX(-150%) skewX(-18deg);
-  animation: sheen 7.5s ease-in-out infinite; animation-delay: calc(var(--i, 0) * 0.95s);
-}
-@keyframes sheen { 0%, 64% { transform: translateX(-150%) skewX(-18deg); } 100% { transform: translateX(430%) skewX(-18deg); } }
-/* the light band sweeps continuously across the card under the cursor */
-.card:hover .card-inner::after, .card:focus-visible .card-inner::after { animation: sheen-fast 1.5s ease-in-out infinite; animation-delay: 0s; }
-@keyframes sheen-fast { 0% { transform: translateX(-150%) skewX(-18deg); } 100% { transform: translateX(430%) skewX(-18deg); } }
 .card:hover .card-inner, .card:focus-visible .card-inner {
   transform: scale(1.045);
   border-color: var(--c);

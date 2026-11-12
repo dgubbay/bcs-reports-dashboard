@@ -28,6 +28,7 @@ const DEPT_META = {
   implementations: { label: 'Implementations', color: '#19b5d8' },
   support: { label: 'Support', color: '#14c8a4' },
 };
+const ASSISTANT = { id: 'assistant', label: 'Personal Assistant', color: '#dbe4ff' };
 const FALLBACK_COLORS = ['#5b8def', '#d98a2b', '#3fae8f', '#c05ad6', '#d65a7a', '#7fa33a'];
 
 const $ = (id) => document.getElementById(id);
@@ -161,17 +162,39 @@ let depts = [];
 let manifestStamp = '';
 let feedDay = '';
 
+const byNewest = (a, b) => (b.date || '').localeCompare(a.date || '') || (a.title || '').localeCompare(b.title || '');
+const isAssistantReport = (r) => /personal\s*assistant/i.test(r.bot || '');
+const isAssistantLand = (land) => /^(assistant|personal[-_ ]?assistant|digests?)$/i.test(land.id || '') || /personal\s*assistant|digest/i.test(land.name || '');
+/** Every report once, even when it shows in both its department and the Personal Assistant section. */
+function uniqueReports(list = depts) {
+  const seen = new Map();
+  for (const d of list) for (const r of d.reports) seen.set(r.href, r);
+  return [...seen.values()];
+}
+
 function buildDepts(manifest) {
+  const lands = manifest.lands || [];
+  const out = lands.filter((land) => !isAssistantLand(land)).map(deptFromLand());
+  // Personal Assistant: every digest the assistant wrote, wherever the feed filed it,
+  // plus anything the feed publishes under a dedicated assistant/digest section.
+  const picked = new Map();
+  for (const land of lands) {
+    for (const r of land.reports || []) if (isAssistantLand(land) || isAssistantReport(r)) picked.set(r.href, r);
+  }
+  const reports = [...picked.values()].sort(byNewest);
+  out.unshift({ id: ASSISTANT.id, label: ASSISTANT.label, color: ASSISTANT.color, virtual: true, reports, newCount: reports.filter((r) => r.isNew).length });
+  return out;
+}
+function deptFromLand() {
   let fallback = 0;
-  return (manifest.lands || []).map((land) => {
+  return (land) => {
     const meta = DEPT_META[land.id] || {
       label: String(land.name || land.id).replace(/\s+Land$/i, ''),
       color: FALLBACK_COLORS[fallback++ % FALLBACK_COLORS.length],
     };
-    const reports = [...(land.reports || [])].sort((a, b) =>
-      (b.date || '').localeCompare(a.date || '') || (a.title || '').localeCompare(b.title || ''));
+    const reports = [...(land.reports || [])].sort(byNewest);
     return { id: land.id, label: meta.label, color: meta.color, reports, newCount: reports.filter((r) => r.isNew).length };
-  });
+  };
 }
 const parseDate = (iso) => {
   const [y, m, d] = String(iso || '').split('-').map(Number);
@@ -223,8 +246,8 @@ room.position.z = ROOM_Z;
 room.visible = false;
 scene.add(overview, room);
 
-// ambience (WebGL only): rippling grid floor, a flowing starfield, drifting nebulae,
-// hologram projector pads and beams under each card, a glow behind the active wall
+// ambience (WebGL only): grid floor, a flowing starfield, drifting nebulae,
+// a soft light beam under each card, a glow behind the active wall
 const floorColor = new THREE.Color('#9a4dff');
 const floorTarget = new THREE.Color('#9a4dff');
 const uTime = { value: 0 };                 // shared clock for every shader
@@ -236,27 +259,7 @@ const nebulae = [];
 const PLANE = new THREE.PlaneGeometry(1, 1);
 const UV_VERT = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
 
-/** Floor disc with rings that pulse outward, like a hologram projector. */
-function padMaterial(color, seed) {
-  return new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-    uniforms: { uColor: { value: new THREE.Color(color) }, uTime, uSeed: { value: seed } },
-    vertexShader: UV_VERT,
-    fragmentShader: `uniform vec3 uColor; uniform float uTime; uniform float uSeed; varying vec2 vUv;
-      void main(){
-        float r = length(vUv - 0.5) * 2.0;
-        if (r > 1.0) discard;
-        float a = smoothstep(0.6, 0.0, r) * (0.26 + 0.1 * sin(uTime * 1.7 + uSeed * 9.0));
-        for (int i = 0; i < 3; i++) {
-          float ph = fract(uTime * 0.22 + uSeed + float(i) / 3.0);
-          a += smoothstep(0.045, 0.0, abs(r - ph)) * (1.0 - ph) * 0.85;
-        }
-        a += smoothstep(0.02, 0.0, abs(r - 0.64)) * 0.45;
-        gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.22), a);
-      }`,
-  });
-}
-/** Light cone rising from the pad to the card. */
+/** Soft light cone rising from the floor to the card. */
 function beamMaterial(color, seed) {
   return new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
@@ -286,10 +289,7 @@ if (gl) {
         float d = distance(vW.xz, uCam.xz);
         float fade = smoothstep(7500.0, 900.0, d);
         float a = grid(vW.xz, 220.0) * 0.5 + grid(vW.xz, 1100.0) * 0.7;
-        // energy ripples travelling outward along the grid lines
-        float r = distance(vW.xz, vec2(0.0, uCenterZ));
-        float pulse = pow(0.5 + 0.5 * sin(r * 0.0042 - uTime * 1.5), 8.0);
-        gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.25 + 0.35 * pulse), a * fade * (0.4 + 1.1 * pulse));
+        gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.25), a * fade * 0.55);
       }`,
   });
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000), floorMat);
@@ -367,11 +367,6 @@ if (gl) {
   roomGlow.scale.set(7000, 3600, 1);
   roomGlow.position.set(0, 100, -700);
   room.add(roomGlow);
-  roomPad = new THREE.Mesh(PLANE, padMaterial('#9a4dff', 0.37));
-  roomPad.rotation.x = -Math.PI / 2;
-  roomPad.scale.setScalar(4200);
-  roomPad.position.set(0, FLOOR_Y + 3, 300);
-  room.add(roomPad);
 }
 
 // ----------------------------------------------------------------------------
@@ -427,6 +422,8 @@ function countUp(node, to) {
   requestAnimationFrame(step);
 }
 
+const noun = (d, n) => (d.virtual ? 'digest' : 'report') + (n === 1 ? '' : 's');
+
 function cardElement(d, i) {
   const card = el('div', d.newCount ? 'card hot' : 'card');
   card.style.setProperty('--i', String(i));
@@ -435,7 +432,7 @@ function cardElement(d, i) {
   card.setAttribute('role', 'button');
   card.tabIndex = 0;
   const n = d.reports.length;
-  card.setAttribute('aria-label', `${d.label}: ${n} report${n === 1 ? '' : 's'}${d.newCount ? `, ${d.newCount} new today` : ''}. Open department.`);
+  card.setAttribute('aria-label', `${d.label}: ${n} ${noun(d, n)}${d.newCount ? `, ${d.newCount} new today` : ''}. Open section.`);
   const inner = el('div', 'card-inner');
   const top = el('div', 'card-top');
   top.append(el('span', 'card-dot'), el('span', 'card-name', d.label));
@@ -443,7 +440,7 @@ function cardElement(d, i) {
   const count = el('div', 'card-count');
   const big = el('b', null, String(n));
   countUp(big, n);
-  count.append(big, el('span', null, n === 1 ? 'report' : 'reports'));
+  count.append(big, el('span', null, noun(d, n)));
   inner.append(top, count);
   if (n) {
     const list = el('ul', 'card-latest');
@@ -454,7 +451,7 @@ function cardElement(d, i) {
     }
     inner.append(list);
   } else {
-    inner.append(el('div', 'card-empty', 'No reports yet'));
+    inner.append(el('div', 'card-empty', d.virtual ? 'No digests yet' : 'No reports yet'));
   }
   card.append(inner);
   return card;
@@ -463,14 +460,16 @@ function cardElement(d, i) {
 let ovTitle = null;
 function dropDept(d) {
   if (d.obj) overview.remove(d.obj, d.back);
-  if (d.pad) { overview.remove(d.pad, d.beam); d.pad.material.dispose(); d.beam.material.dispose(); }
-  d.obj = d.back = d.pad = d.beam = null;
+  if (d.beam) { overview.remove(d.beam); d.beam.material.dispose(); }
+  d.obj = d.back = d.beam = null;
 }
 function buildOverview() {
   if (ovTitle) overview.remove(ovTitle);
   const head = el('div', 'ov-title');
-  const total = depts.reduce((a, d) => a + d.reports.length, 0);
-  const fresh = depts.reduce((a, d) => a + d.newCount, 0);
+  const all = uniqueReports();
+  const total = all.length;
+  const fresh = all.filter((r) => r.isNew).length;
+  const deptCount = depts.filter((d) => !d.virtual).length;
   const day = parseDate(feedDay);
   const h2 = el('h2');
   if (day) h2.append(el('span', null, day.toLocaleDateString('en-US', { weekday: 'long' }) + ', '), el('span', 'grad', day.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })));
@@ -478,7 +477,7 @@ function buildOverview() {
   head.append(
     el('div', 'eyebrow', 'BCS REPORTS HUB'),
     h2,
-    el('p', null, `${total} report${total === 1 ? '' : 's'} across ${depts.length} departments${fresh ? ` · ${fresh} new today` : ''}`));
+    el('p', null, `${total} report${total === 1 ? '' : 's'} across ${deptCount} departments${fresh ? ` · ${fresh} new today` : ''}`));
   ovTitle = new CSS3DObject(head);
   overview.add(ovTitle);
   depts.forEach(dropDept);
@@ -490,10 +489,8 @@ function buildOverview() {
     d.back = new CSS3DObject(back);
     overview.add(d.back, d.obj);
     if (gl) {
-      d.pad = new THREE.Mesh(PLANE, padMaterial(d.color, (i * 0.37) % 1));
-      d.pad.rotation.x = -Math.PI / 2;
       d.beam = new THREE.Mesh(PLANE, beamMaterial(d.color, (i * 0.61) % 1));
-      overview.add(d.pad, d.beam);
+      overview.add(d.beam);
     }
   });
   layoutOverview();
@@ -510,10 +507,8 @@ function layoutOverview() {
     d.obj.rotation.y = p.ry;
     d.back.position.set(p.x, p.y, p.z - 46);
     d.back.rotation.y = p.ry;
-    if (d.pad) {
+    if (d.beam) {
       const top = p.y - CARD_H / 2 + 30, h = Math.max(60, top - FLOOR_Y);
-      d.pad.position.set(p.x, FLOOR_Y + 3, p.z - 40);
-      d.pad.scale.setScalar(660);
       d.beam.position.set(p.x, FLOOR_Y + h / 2, p.z - 40);
       d.beam.scale.set(CARD_W * 0.7, h, 1);
       d.beam.rotation.y = p.ry;
@@ -576,7 +571,7 @@ function buildRoom(d) {
   const n = d.reports.length;
   const title = el('div', 'room-title');
   title.style.setProperty('--c', d.color);
-  title.append(el('h2', null, d.label), el('p', null, n ? `${n} report${n === 1 ? '' : 's'}${d.newCount ? ` · ${d.newCount} new today` : ''}` : 'No reports yet'));
+  title.append(el('h2', null, d.label), el('p', null, n ? `${n} ${noun(d, n)}${d.newCount ? ` · ${d.newCount} new today` : ''}` : d.virtual ? 'No digests yet' : 'No reports yet'));
   const titleObj = new CSS3DObject(title);
   room.add(titleObj);
   rm.titleObj = titleObj;
@@ -584,7 +579,7 @@ function buildRoom(d) {
   if (!n) {
     const plaque = el('div', 'plaque');
     plaque.style.setProperty('--c', d.color);
-    plaque.append(el('h3', null, 'Nothing here yet'), el('p', null, 'New reports for this department appear here automatically.'));
+    plaque.append(el('h3', null, 'Nothing here yet'), el('p', null, d.virtual ? 'New Personal Assistant digests appear here automatically.' : 'New reports for this department appear here automatically.'));
     const po = new CSS3DObject(plaque);
     po.scale.setScalar(0.6);
     room.add(po);
@@ -883,7 +878,7 @@ function updateHud() {
   updateHint();
 }
 function updateStatus(manifest) {
-  const total = depts.reduce((a, d) => a + d.reports.length, 0);
+  const total = uniqueReports().length;
   const stamp = fmtStamp(manifest.generatedAt);
   els.status.textContent = `${total} report${total === 1 ? '' : 's'}${stamp ? ` · feed updated ${stamp}` : ''}`;
 }
@@ -1082,7 +1077,7 @@ function applyManifest(manifest, announce) {
   const stamp = JSON.stringify(manifest.lands || []);
   const changed = stamp !== manifestStamp;
   if (changed) {
-    const before = depts.reduce((a, d) => a + d.reports.length, 0);
+    const before = uniqueReports().length;
     const oldCurrentHrefs = current ? current.reports.map((r) => r.href).join('|') : '';
     const currentId = current ? current.id : null;
     depts.forEach(dropDept);
@@ -1096,7 +1091,7 @@ function applyManifest(manifest, announce) {
       current = next;
       if (mode === 'room' && next.reports.map((r) => r.href).join('|') !== oldCurrentHrefs) buildRoom(next);
     }
-    const after = depts.reduce((a, d) => a + d.reports.length, 0);
+    const after = uniqueReports().length;
     if (announce && before) toast(after > before ? `${after - before} new report${after - before === 1 ? '' : 's'} arrived` : 'Reports updated');
   } else if (announce === 'manual') {
     toast('Already up to date');
