@@ -24,7 +24,6 @@ const DEPT_META = {
   finance: { label: 'Finance', color: '#f59e0b' },
   sales: { label: 'Sales', color: '#ff5d5d' },
   marketing: { label: 'Marketing', color: '#a855f7' },
-  emails: { label: 'Comms', color: '#4f6ff5' },
   implementations: { label: 'Implementations', color: '#19b5d8' },
   support: { label: 'Support', color: '#14c8a4' },
 };
@@ -240,7 +239,7 @@ function outboundDept() {
 
 function buildDepts(manifest) {
   const lands = manifest.lands || [];
-  const out = lands.filter((land) => !isAssistantLand(land)).map(deptFromLand());
+  const out = lands.filter((land) => !isAssistantLand(land) && land.id !== 'emails').map(deptFromLand());
   // Personal Assistant: every digest the assistant wrote, wherever the feed filed it,
   // plus anything the feed publishes under a dedicated assistant/digest section.
   const picked = new Map();
