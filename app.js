@@ -446,21 +446,33 @@ let mode = 'overview';      // 'overview' | 'room' | 'focus'
 let busy = false;           // a camera transition is running
 let current = null;         // department whose room is open
 let focusIdx = -1;
-const ov = { w: 0, h: 0, home: 3000, enter: 700, cy: 0 };
+const ov = { w: 0, h: 0, home: 3000, enter: 700, cy: 0, tall: false };
 const rm = { w: 0, h: 0, home: 2000, focus: 700, cy: 0, tall: false, screens: [], array: false };
 
 const planeZ = () => (mode === 'overview' ? 0 : ROOM_Z);
 /** Camera distance that fits a w x h curved grid, allowing for its edges bending toward the viewer. */
-const INSET_TOP = 58;                                  // the HUD
+let hudTop = 58;                                       // measured HUD bottom, including the notch
+const insetTop = () => hudTop;
 const insetBottom = () => (coarse ? 14 : 54);          // the hint pill (it fades away on touch screens)
+function measureInsets() {
+  if (els.hud && !els.hud.hidden) {
+    let b = 0;
+    els.hud.querySelectorAll('button, #crumbs, #hud-right').forEach((n) => {
+      b = Math.max(b, n.getBoundingClientRect().bottom);
+    });
+    if (b) hudTop = Math.max(52, Math.round(b + 8));
+  }
+}
 function fitDistance(w, h, radius, pad = 1.2) {
-  const free = Math.max(0.5, (H - INSET_TOP - insetBottom()) / H);   // share of the height the HUD leaves free
+  const free = Math.max(0.5, (H - insetTop() - insetBottom()) / H);   // share of the height the HUD leaves free
   return Math.max(h / 2 / TAN / free, w / 2 / (TAN * (W / H))) * pad + radius * (1 - Math.cos(w / 2 / radius));
 }
 /** How far to raise the camera at `dist` so content sits centred in the free area below the HUD. */
-const insetLift = (dist) => ((INSET_TOP - insetBottom()) / 2) * ((2 * dist * TAN) / H);
+const insetLift = (dist) => ((insetTop() - insetBottom()) / 2) * ((2 * dist * TAN) / H);
 /** Distance at which a w x h panel fills `fh` of the viewport height or `fw` of its width. */
 const fillDistance = (w, h, fh, fw) => Math.max(h / 2 / TAN / fh, w / 2 / (TAN * (W / H)) / fw);
+/** Phones in either orientation, including large Plus / Max models in landscape. */
+const isPhone = () => W < 720 || (W <= 926 && H < 520);
 
 function setAccent(color) {
   document.documentElement.style.setProperty('--accent', color);
@@ -576,13 +588,25 @@ function buildOverview() {
 }
 
 function layoutOverview() {
-  // try every column count and keep the one that shows the cards largest on this screen
   const n = depts.length, TITLE_H = 400;
+  const phone = isPhone();
   let grid = null, home = Infinity;
-  for (let cols = 1; cols <= Math.max(1, Math.min(n, 4)); cols++) {
-    const g = curvedGrid(n, cols, CARD_W, CARD_H, CARD_GX, CARD_GY, OV_RADIUS);
-    const dist = fitDistance(g.w, g.h + TITLE_H, OV_RADIUS, 1.07);
-    if (dist < home) { grid = g; home = dist; }
+  if (phone) {
+    // one column on a portrait phone, two on landscape / larger widths; drag to see the rest
+    const cols = W >= 600 ? 2 : 1;
+    grid = curvedGrid(n, cols, CARD_W, CARD_H, CARD_GX, CARD_GY, OV_RADIUS);
+    const rows = Math.ceil(n / cols);
+    const shown = H < 500 ? 1.05 : 1.7;
+    home = fitDistance(grid.w, Math.min(rows, shown) * (CARD_H + CARD_GY) + TITLE_H, OV_RADIUS, 1.08);
+    ov.tall = rows > shown;
+  } else {
+    // try every column count and keep the one that shows the cards largest on this screen
+    for (let cols = 1; cols <= Math.max(1, Math.min(n, 4)); cols++) {
+      const g = curvedGrid(n, cols, CARD_W, CARD_H, CARD_GX, CARD_GY, OV_RADIUS);
+      const dist = fitDistance(g.w, g.h + TITLE_H, OV_RADIUS, 1.07);
+      if (dist < home) { grid = g; home = dist; }
+    }
+    ov.tall = false;
   }
   depts.forEach((d, i) => {
     const p = grid.items[i];
@@ -599,12 +623,35 @@ function layoutOverview() {
     }
   });
   ov.w = grid.w; ov.h = grid.h;
-  if (ovTitle) ovTitle.position.set(0, grid.h / 2 + 225, 0);
+  if (ovTitle) {
+    ovTitle.position.set(0, grid.h / 2 + (phone && W < 600 ? 250 : 225), 0);
+    const viewW = (2 * home * TAN) * (W / H);
+    fitCssTitle(ovTitle, viewW, phone, 1);
+  }
   ov.home = home;
-  ov.cy = (TITLE_H - 10) / 2 + insetLift(home);          // centre of title + grid
-  // small screens: cards switch to a bolder layout that stays readable when tiny
-  document.body.classList.toggle('compact', CARD_W * (H / 2 / TAN) / home < 250);
+  if (ov.tall) {
+    const top = grid.h / 2 + TITLE_H;
+    const wpp = (2 * ov.home * TAN) / H;
+    ov.cy = top + 30 + insetTop() * wpp - ov.home * TAN;
+  } else {
+    ov.cy = (TITLE_H - 10) / 2 + insetLift(home);
+  }
+  const onScreen = CARD_W * (H / 2 / TAN) / home;
+  document.body.classList.toggle('compact', phone || onScreen < 250);
+  document.body.classList.toggle('phone-narrow', phone && W < 600);
   ov.enter = Math.min(ov.home * 0.6, fillDistance(CARD_W, CARD_H, 0.68, 0.86));
+}
+
+/** Size a CSS3D title so it fits the current view width (and wraps on a phone). */
+function fitCssTitle(obj, viewW, phone, desktopScale) {
+  if (!obj) return;
+  if (phone) {
+    obj.element.style.width = `${Math.round(viewW * 0.92)}px`;
+    obj.scale.setScalar(1);
+  } else {
+    obj.element.style.width = '';
+    obj.scale.setScalar(desktopScale);
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -704,13 +751,14 @@ function buildRoom(d) {
   layoutRoom();
 }
 
-/** Front-facing 3x3 (or fewer) curved wall that keeps every outbound panel in view. */
+/** Front-facing wall of outbound screens. Desktop keeps a 3-column array; phones use a 1- or 2-column vertical wall you can drag through. */
 function layoutOutboundRoom() {
   const n = rm.screens.length, aspect = W / H;
   const sw = SCREEN_W * SCREEN_S, sh = SCREEN_H * SCREEN_S;
-  const cols = Math.min(3, Math.max(1, n || 1));
-  const gx = aspect < 0.8 ? 44 : SCR_GX;
-  const gy = aspect < 0.8 ? 44 : SCR_GY;
+  const phone = isPhone();
+  const cols = phone ? (W >= 600 ? 2 : 1) : Math.min(3, Math.max(1, n || 1));
+  const gx = phone ? 40 : (aspect < 0.8 ? 44 : SCR_GX);
+  const gy = phone ? 48 : (aspect < 0.8 ? 44 : SCR_GY);
   const grid = curvedGrid(n, cols, sw, sh, gx, gy, ROOM_RADIUS);
   rm.screens.forEach((rec, i) => {
     const p = grid.items[i];
@@ -718,26 +766,35 @@ function layoutOutboundRoom() {
     rec.obj.rotation.y = p.ry;
   });
   const wallW = n ? grid.w : 700, wallH = n ? grid.h : 300;
-  const narrow = aspect < 0.8;
-  const titleGap = narrow ? 110 : 150, titleH = narrow ? 110 : 150;
+  const titleGap = phone ? 120 : (aspect < 0.8 ? 110 : 150);
+  const titleH = phone ? 140 : (aspect < 0.8 ? 110 : 150);
+  rm.w = wallW; rm.h = wallH;
+  const head = titleGap + titleH;
+  const rows = Math.max(1, Math.ceil((n || 1) / cols));
+  const shown = phone ? (H < 500 ? 1.15 : 1.35) : rows;
+  const fitAll = fitDistance(wallW, wallH + head + 100, ROOM_RADIUS, phone ? 1.16 : 1.1);
+  const fitTop = fitDistance(wallW, Math.min(rows, shown) * (sh + gy) + head + 100, ROOM_RADIUS, 1.12);
+  rm.home = phone ? fitTop : fitAll;
+  rm.tall = phone && rows > shown;
   if (rm.titleObj) {
     rm.titleObj.position.set(0, wallH / 2 + titleGap + titleH / 2 - 40, 0);
     rm.titleObj.rotation.y = 0;
-    rm.titleObj.scale.setScalar(narrow ? 0.42 : 0.6);
+    fitCssTitle(rm.titleObj, (2 * rm.home * TAN) * (W / H), phone, aspect < 0.8 ? 0.42 : 0.6);
   }
-  rm.w = wallW; rm.h = wallH;
-  const head = titleGap + titleH;
-  rm.home = fitDistance(wallW, wallH + head + 100, ROOM_RADIUS, narrow ? 1.16 : 1.1);
-  rm.tall = false;
-  rm.cy = head / 2 - 20 + insetLift(rm.home);
-  rm.focus = Math.min(rm.home * 0.7, fillDistance(sw, sh, 0.9, 0.94));
+  const top = wallH / 2 + head;
+  const wpp = (2 * rm.home * TAN) / H;
+  rm.cy = rm.tall ? top + 30 + insetTop() * wpp - rm.home * TAN : head / 2 - 20 + insetLift(rm.home);
+  // On a phone, zoom in close enough that board typography is near its designed size.
+  const fh = phone ? Math.max(0.9, SCREEN_H / H) : 0.9;
+  const fw = phone ? Math.max(0.94, SCREEN_W / W) : 0.94;
+  rm.focus = Math.min(rm.home * 0.7, fillDistance(sw, sh, fh, fw));
 }
 
 function layoutRoom() {
   if (rm.array) { layoutOutboundRoom(); return; }
-  const n = rm.screens.length, aspect = W / H;
+  const n = rm.screens.length, aspect = W / H, phone = isPhone();
   const sw = SCREEN_W * SCREEN_S, sh = SCREEN_H * SCREEN_S;
-  const maxCols = aspect < 0.8 ? 1 : aspect < 1.3 ? 2 : n <= 4 ? 4 : n <= 6 ? 3 : 4;
+  const maxCols = phone ? (W >= 600 ? 2 : 1) : aspect < 0.8 ? 1 : aspect < 1.3 ? 2 : n <= 4 ? 4 : n <= 6 ? 3 : 4;
   const cols = Math.max(1, Math.min(n || 1, maxCols));
   const grid = curvedGrid(n, cols, sw, sh, SCR_GX, SCR_GY, ROOM_RADIUS);
   rm.screens.forEach((rec, i) => {
@@ -746,23 +803,25 @@ function layoutRoom() {
     rec.obj.rotation.y = p.ry;
   });
   const wallW = n ? grid.w : 700, wallH = n ? grid.h : 300;
-  const titleGap = 150, titleH = 150;
-  rm.titleObj.position.set(0, wallH / 2 + titleGap + titleH / 2 - 40, 0);
-  rm.titleObj.scale.setScalar(0.6);
+  const titleGap = phone ? 120 : 150, titleH = phone ? 140 : 150;
   rm.w = wallW; rm.h = wallH;
   const head = titleGap + titleH;
   const rows = Math.max(1, Math.ceil(n / cols));
   const fitAll = fitDistance(wallW, wallH + head + 100, ROOM_RADIUS, 1.1);
   // a long wall opens on its first rows (three on wide screens, under two on a phone); drag to see the rest
-  const shown = aspect < 0.8 ? 1.6 : 3;
+  const shown = phone ? (H < 500 ? 1.15 : 1.6) : (aspect < 0.8 ? 1.6 : 3);
   const fitTop = fitDistance(wallW, Math.min(rows, shown) * (sh + SCR_GY) + head + 100, ROOM_RADIUS, 1.1);
   rm.home = Math.min(fitAll, fitTop);
   rm.tall = rows > shown;
   const top = wallH / 2 + head;
   const wpp = (2 * rm.home * TAN) / H;
   // centre of what the home view shows: the whole wall, or its top edge tucked under the HUD
-  rm.cy = rm.tall ? top + 30 + INSET_TOP * wpp - rm.home * TAN : head / 2 - 20 + insetLift(rm.home);
+  rm.cy = rm.tall ? top + 30 + insetTop() * wpp - rm.home * TAN : head / 2 - 20 + insetLift(rm.home);
   rm.focus = Math.min(rm.home * 0.7, fillDistance(sw, sh, 0.8, 0.92));
+  if (rm.titleObj) {
+    rm.titleObj.position.set(0, wallH / 2 + titleGap + titleH / 2 - 40, 0);
+    fitCssTitle(rm.titleObj, (2 * rm.home * TAN) * (W / H), phone, 0.6);
+  }
 }
 
 const roomHome = () => new THREE.Vector3(0, rm.cy, ROOM_Z + rm.home);
@@ -790,8 +849,8 @@ function clampGoal() {
   const g = cam.goal;
   if (mode === 'overview') {
     g.x = THREE.MathUtils.clamp(g.x, -ov.w / 2, ov.w / 2);
-    g.y = THREE.MathUtils.clamp(g.y, -ov.h / 2, ov.h / 2 + 260);
-    if (g.z >= ov.home) { g.x *= 0.5; g.y += (ov.cy - g.y) * 0.5; }
+    g.y = THREE.MathUtils.clamp(g.y, -ov.h / 2, Math.max(ov.cy, ov.h / 2 + 280));
+    if (g.z >= ov.home) { g.x *= 0.5; if (!ov.tall) g.y += (ov.cy - g.y) * 0.5; }
   } else {
     g.x = THREE.MathUtils.clamp(g.x, -rm.w / 2, rm.w / 2);
     g.y = THREE.MathUtils.clamp(g.y, -rm.h / 2, Math.max(rm.cy, rm.h / 2 + 200));
@@ -1000,12 +1059,17 @@ function toast(msg) {
 let lastHint = '', hintTimer = 0;
 function updateHint() {
   let text;
-  if (mode === 'overview') text = coarse ? 'Tap or pinch into a section to open it' : 'Scroll or pinch to zoom · Drag to move · Zoom into a department to open it';
-  else if (mode === 'room') {
+  if (mode === 'overview') {
+    text = coarse
+      ? (ov.tall ? 'Drag to see more · Tap or pinch into a section' : 'Tap or pinch into a section to open it')
+      : 'Scroll or pinch to zoom · Drag to move · Zoom into a department to open it';
+  } else if (mode === 'room') {
     text = cam.goal.z - ROOM_Z > rm.home * 1.04
       ? (coarse ? 'Keep pinching out to go back' : 'Keep zooming out to return to all departments')
       : !rm.screens.length ? (coarse ? 'Pinch out to go back' : 'Zoom out to go back to all departments')
-      : rm.array ? (coarse ? 'Pinch to zoom into a screen · Pinch out or Esc to go back' : 'Scroll or pinch to zoom into a screen · Zoom out or Esc to go back')
+      : rm.array ? (coarse
+        ? `${rm.tall ? 'Drag to see more · ' : ''}Pinch to zoom into a screen · Pinch out to go back`
+        : 'Scroll or pinch to zoom into a screen · Zoom out or Esc to go back')
       : coarse ? `Tap a report to open it · ${rm.tall ? 'Drag to scroll · ' : ''}Pinch out to go back`
       : `Zoom into a report to open it · Drag to ${rm.tall ? 'see more' : 'move'} · Zoom out to go back`;
   }
@@ -1117,7 +1181,21 @@ window.addEventListener('wheel', (e) => {
   // trackpad pinch arrives as ctrl+wheel with small deltas
   zoomAt(e.clientX, e.clientY, Math.exp(dy * (e.ctrlKey ? 0.012 : 0.0032)));
 }, { passive: false });
-for (const t of ['gesturestart', 'gesturechange', 'gestureend']) window.addEventListener(t, (e) => e.preventDefault());
+for (const t of ['gesturestart', 'gesturechange', 'gestureend']) {
+  window.addEventListener(t, (e) => e.preventDefault());
+  document.addEventListener(t, (e) => e.preventDefault());
+}
+function allowPageTouch(target) {
+  if (!target || !target.closest) return false;
+  if (!els.gate.hidden && target.closest('#gate, #loading')) return true;
+  if (mode === 'focus' && target.closest('#focus')) return true;
+  if (target.closest('#hud, #hint, #toast, button, input, textarea, a, label')) return true;
+  return false;
+}
+document.addEventListener('touchmove', (e) => {
+  if (allowPageTouch(e.target) && e.touches.length < 2) return;
+  e.preventDefault();
+}, { passive: false });
 
 window.addEventListener('keydown', (e) => {
   if (!els.gate.hidden) return;
@@ -1153,6 +1231,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 function resize() {
+  measureInsets();
   const w = els.stage.clientWidth || innerWidth, h = els.stage.clientHeight || innerHeight;
   if (w === W && h === H && sized) return;
   sized = true;
@@ -1172,6 +1251,10 @@ function resize() {
 let sized = false;
 window.addEventListener('resize', resize);
 if (window.ResizeObserver) new ResizeObserver(resize).observe(els.stage);
+if (window.visualViewport) {
+  const onVV = () => { sized = false; resize(); };
+  visualViewport.addEventListener('resize', onVV);
+}
 
 // ----------------------------------------------------------------------------
 // render loop
