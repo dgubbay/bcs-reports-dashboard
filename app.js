@@ -208,6 +208,13 @@ let feedDay = '';
 
 const byNewest = (a, b) => (b.date || '').localeCompare(a.date || '') || (a.title || '').localeCompare(b.title || '');
 const isAssistantReport = (r) => /personal\s*assistant/i.test(r.bot || '');
+const isOneOnOnePrep = (r) => /1\s*:\s*1\s*prep|one[- ]on[- ]one\s*prep/i.test(r.title || '');
+/** Keep 1:1 prep reports together as a block at the end of a department's wall. */
+function groupPreps(list) {
+  const preps = list.filter(isOneOnOnePrep);
+  if (!preps.length) return list;
+  return [...list.filter((r) => !isOneOnOnePrep(r)), ...preps];
+}
 const isAssistantLand = (land) => /^(assistant|personal[-_ ]?assistant|digests?)$/i.test(land.id || '') || /personal\s*assistant|digest/i.test(land.name || '');
 /** Every report once, even when it shows in both its department and the Personal Assistant section. */
 function uniqueReports(list = depts) {
@@ -261,7 +268,7 @@ function deptFromLand() {
       label: String(land.name || land.id).replace(/\s+Land$/i, ''),
       color: FALLBACK_COLORS[fallback++ % FALLBACK_COLORS.length],
     };
-    const reports = [...(land.reports || [])].sort(byNewest);
+    const reports = groupPreps([...(land.reports || [])].filter((r) => !isAssistantReport(r)).sort(byNewest));
     return { id: land.id, label: meta.label, color: meta.color, reports, newCount: reports.filter((r) => r.isNew).length };
   };
 }
@@ -658,6 +665,7 @@ function fitCssTitle(obj, viewW, phone, desktopScale) {
 // ----------------------------------------------------------------------------
 function screenElement(d, report, idx) {
   const scr = el('div', d.live ? 'screen zoom-only' : 'screen');
+  if (!d.live && isOneOnOnePrep(report)) scr.classList.add('prep');
   scr.dataset.idx = String(idx);
   scr.style.setProperty('--i', String(idx));
   scr.style.setProperty('--c', d.color);
@@ -672,6 +680,7 @@ function screenElement(d, report, idx) {
   const head = el('header');
   if (report.live) head.append(el('span', 'badge live', 'LIVE'));
   else if (report.isNew) head.append(el('span', 'badge', 'NEW'));
+  if (!report.live && isOneOnOnePrep(report)) head.append(el('span', 'badge prep', '1:1'));
   head.append(el('h3', null, report.title || 'Report'));
   head.append(el('span', 'meta', report.live
     ? ['Live', report.updated].filter(Boolean).join(' · ')
