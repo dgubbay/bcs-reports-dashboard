@@ -26,6 +26,7 @@ const DEPT_META = {
   marketing: { label: 'Marketing', color: '#a855f7' },
   implementations: { label: 'Implementations', color: '#19b5d8' },
   support: { label: 'Support', color: '#14c8a4' },
+  hr: { label: 'HR', color: '#84cc16' },
 };
 const ASSISTANT = { id: 'assistant', label: 'Personal Assistant', color: '#dbe4ff' };
 const OUTBOUND_BOARD_URL = 'https://dgubbay.github.io/bcs-outbound-board/';
